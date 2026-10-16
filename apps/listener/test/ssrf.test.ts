@@ -9,6 +9,7 @@ import {
   isSafeWebhookUrl,
   isBlockedIp,
   validateWebhookUrl,
+  normaliseHost,
   IPV4_BLOCKED_RANGES,
   IPV6_BLOCKED_RANGES,
 } from "../src/ssrf.js";
@@ -260,4 +261,83 @@ describe("M3 · blocklist enforced on all networks (allowLocal=false)", () => {
     const r = await validateWebhookUrl("https://loopback.attacker.example/wh", false);
     expect(r.safe).toBe(false);
   });
+});
+
+describe("normaliseHost (fixes #248)", () => {
+  it("normalises standard hostnames and IPs", () => {
+    expect(normaliseHost("EXAMPLE.COM")).toEqual({ valid: true, host: "example.com", isIp: false });
+    expect(normaliseHost("127.0.0.1")).toEqual({
+      valid: true,
+      host: "127.0.0.1",
+      isIp: true,
+      parsedIp: expect.anything(),
+    });
+  });
+
+  it("strips balanced brackets from IPv6 and normalises representation", () => {
+    expect(normaliseHost("[::1]")).toEqual({
+      valid: true,
+      host: "::1",
+      isIp: true,
+      parsedIp: expect.anything(),
+    });
+    expect(normaliseHost("[0:0:0:0:0:0:0:1]")).toEqual({
+      valid: true,
+      host: "::1",
+      isIp: true,
+      parsedIp: expect.anything(),
+    });
+  });
+
+  it("rejects unbalanced or malformed brackets", () => {
+    expect(normaliseHost("[::1")).toEqual({ valid: false, reason: "unbalanced_brackets" });
+    expect(normaliseHost("::1]")).toEqual({ valid: false, reason: "unbalanced_brackets" });
+    expect(normaliseHost("[[::1]]")).toEqual({ valid: false, reason: "malformed_brackets" });
+  });
+
+  it("rejects zone identifiers (scoped addresses)", () => {
+    expect(normaliseHost("fe80::1%eth0")).toEqual({ valid: false, reason: "zone_identifier_rejected" });
+    expect(normaliseHost("[fe80::1%eth0]")).toEqual({ valid: false, reason: "zone_identifier_rejected" });
+  });
+});
+
+describe("literal-IP path test vectors (fixes #248)", () => {
+  const vectors = [
+    { target: "https://[::1]/wh", expectedReason: "ip_blocked", desc: "loopback [::1]" },
+    {
+      target: "https://[::ffff:127.0.0.1]/wh",
+      expectedReason: "blocked_ip:embedded:127.0.0.1",
+      desc: "IPv4-mapped ::ffff:127.0.0.1",
+    },
+    {
+      target: "https://[0:0:0:0:0:0:0:1]/wh",
+      expectedReason: "ip_blocked",
+      desc: "uncompressed loopback 0:0:0:0:0:0:0:1",
+    },
+    {
+      target: "https://[fe80::1%eth0]/wh",
+      expectedReason: "zone_identifier_rejected",
+      desc: "link-local with zone identifier fe80::1%eth0",
+    },
+    {
+      target: "https://169.254.169.254/wh",
+      expectedReason: "ip_blocked",
+      desc: "cloud metadata IPv4 literal 169.254.169.254",
+    },
+    {
+      target: "https://[64:ff9b::a9fe:a9fe]/wh",
+      expectedReason: "blocked_ip:embedded:169.254.169.254",
+      desc: "NAT64 prefix embedding cloud metadata 64:ff9b::a9fe:a9fe",
+    },
+  ];
+
+  for (const v of vectors) {
+    it(`rejects ${v.desc} with reason ${v.expectedReason}`, async () => {
+      const r = await validateWebhookUrl(v.target, false);
+      expect(r.safe).toBe(false);
+      if (!r.safe) {
+        expect(r.reason).toBe(v.expectedReason);
+      }
+    });
+  }
 });

@@ -135,6 +135,55 @@ export type ValidationResult =
   | { safe: true; target: ValidatedTarget }
   | { safe: false; reason: string };
 
+export type NormalisedHostResult =
+  | { valid: true; host: string; isIp: boolean; parsedIp?: ipaddr.IPv4 | ipaddr.IPv6 }
+  | { valid: false; reason: string };
+
+/**
+ * Normalise a host from URL or literal input (fixes #248):
+ * - Rejects zone identifiers ('%') to prevent scoped address bypasses.
+ * - Strips balanced IPv6 brackets ('[...]'). Rejects asymmetric brackets.
+ * - Normalises IP literals into canonical form.
+ */
+export function normaliseHost(rawHost: string): NormalisedHostResult {
+  if (!rawHost || typeof rawHost !== "string") {
+    return { valid: false, reason: "empty_hostname" };
+  }
+  let host = rawHost.toLowerCase().trim();
+
+  // Reject zone identifiers (RFC 6874 scoped address, e.g. fe80::1%eth0)
+  if (host.includes("%")) {
+    return { valid: false, reason: "zone_identifier_rejected" };
+  }
+
+  // Handle bracketed IPv6: must be properly paired
+  const hasLeading = host.startsWith("[");
+  const hasTrailing = host.endsWith("]");
+  if (hasLeading || hasTrailing) {
+    if (!hasLeading || !hasTrailing) {
+      return { valid: false, reason: "unbalanced_brackets" };
+    }
+    host = host.slice(1, -1);
+    if (host.includes("[") || host.includes("]")) {
+      return { valid: false, reason: "malformed_brackets" };
+    }
+  }
+
+  if (!host) {
+    return { valid: false, reason: "empty_hostname" };
+  }
+
+  if (ipaddr.isValid(host)) {
+    const parsedIp = ipaddr.parse(host);
+    const canonical = parsedIp.kind() === "ipv4"
+      ? parsedIp.toString()
+      : (parsedIp as ipaddr.IPv6).toRFC5952String();
+    return { valid: true, host: canonical, isIp: true, parsedIp };
+  }
+
+  return { valid: true, host, isIp: false };
+}
+
 /**
  * Pre-flight URL shape check (sync, cheap). Returns false on obviously bad URLs
  * so callers can mark deliveries dead without paying DNS cost.
@@ -146,16 +195,20 @@ export type ValidationResult =
  * mock servers (example.com, localhost) work in tests. Audit-003 L1.
  */
 export function isSafeWebhookUrl(url: string, allowLocal: boolean): boolean {
+  if (/https?:\/\/[^/]*%[a-zA-Z0-9_-]+/.test(url)) return false;
   let parsed: URL;
   try { parsed = new URL(url); } catch { return false; }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
   if (!allowLocal && parsed.protocol !== "https:") return false;
   if (parsed.username || parsed.password) return false; // no embedded creds
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!host) return false;
+
+  const norm = normaliseHost(parsed.hostname);
+  if (!norm.valid) return false;
+  const host = norm.host;
+
   if (!allowLocal && LOCAL_HOSTNAMES.has(host)) return false;
   // Reject hostnames that are literal IPs in the blocked set (skip DNS).
-  if (!allowLocal && ipaddr.isValid(host) && isBlockedIp(host)) {
+  if (!allowLocal && norm.isIp && isBlockedIp(host)) {
     return false;
   }
   const port = parsed.port ? Number(parsed.port) : (parsed.protocol === "https:" ? 443 : 80);
@@ -173,17 +226,23 @@ export async function validateWebhookUrl(
   url: string,
   allowLocal: boolean,
 ): Promise<ValidationResult> {
+  // Reject zone identifier in URL host before URL parser throws generic invalid_url
+  if (/https?:\/\/[^/]*%[a-zA-Z0-9_-]+/.test(url)) {
+    return { safe: false, reason: "zone_identifier_rejected" };
+  }
+
   let parsed: URL;
   try { parsed = new URL(url); } catch { return { safe: false, reason: "invalid_url" }; }
 
   const protocol = parsed.protocol as "http:" | "https:";
   const port = parsed.port ? Number(parsed.port) : (protocol === "https:" ? 443 : 80);
-  // URL.hostname for `[::1]` is "[::1]" — strip brackets so ipaddr can parse.
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!host) return { safe: false, reason: "preflight_rejected" };
+
+  const norm = normaliseHost(parsed.hostname);
+  if (!norm.valid) return { safe: false, reason: norm.reason };
+  const host = norm.host;
 
   // If host is a literal IP, check blocklist directly to provide specific reason
-  if (ipaddr.isValid(host)) {
+  if (norm.isIp) {
     if (!allowLocal) {
       const check = checkBlockedIp(host);
       if (check.blocked) {
@@ -194,7 +253,7 @@ export async function validateWebhookUrl(
       }
     }
     if (!isSafeWebhookUrl(url, allowLocal)) return { safe: false, reason: "preflight_rejected" };
-    const family = (ipaddr.parse(host).kind() === "ipv4" ? 4 : 6) as 4 | 6;
+    const family = (norm.parsedIp ? norm.parsedIp.kind() === "ipv4" ? 4 : 6 : 4) as 4 | 6;
     return { safe: true, target: { hostname: host, ip: host, family, port, protocol } };
   }
 
