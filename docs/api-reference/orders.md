@@ -189,9 +189,11 @@ See [webhooks reference](./webhooks.md) for payload shape.
 
 ## Notes on settlement math
 
-SlipPay charges a platform fee (default 2.97% / 297 bp, configurable per merchant via
+SlipPay charges a platform fee (default 2.97% / 297 bp, citing `DEFAULT_PLATFORM_FEE_BP = 297`, configurable per merchant via
 `platform_fee_bp`). The buyer pays `usdc_amount`; the merchant receives
 `usdc_amount * (1 - platform_fee_bp / 10000)`. The platform receives the rest.
+This platform settlement fee is distinct from the FX conversion spread (default 1.90% / 190 bp, citing `DEFAULT_FX_SPREAD_BPS = 190`),
+which applies only during fiat-to-stablecoin conversions (Pix BRL -> USDC).
 
 The matcher accepts the payment as `paid` only if the on-chain amount is
 **>= the expected merchant share**. This way the buyer can pay the gross or
