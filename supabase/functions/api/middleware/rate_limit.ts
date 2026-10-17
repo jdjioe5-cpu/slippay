@@ -17,6 +17,7 @@
 
 import type { Context, Next } from "hono";
 import { clientIp, type ConnInfo } from "../lib/client_ip.ts";
+import { TwoTierRateLimiter, type RateLimitStore } from "@slippay/shared";
 
 export interface Bucket {
   tokens: number;
@@ -32,6 +33,10 @@ export interface LimiterConfig {
   scope?: string;
   /** Maximum number of buckets tracked before LRU eviction. Defaults to 10,000. */
   maxBuckets?: number;
+  /** Authoritative cross-isolate shared store (e.g. Postgres backed). */
+  store?: RateLimitStore;
+  /** Whether to fail closed on sensitive scopes if the shared store is unreachable. */
+  failClosed?: boolean;
 }
 
 export const DEFAULT_MAX_BUCKETS = 10_000;
@@ -86,19 +91,44 @@ export function rateLimit(cfg: LimiterConfig) {
   const { capacity, refillPerSec } = cfg;
   const keyFn = cfg.key ?? defaultKey;
   const scope = cfg.scope ?? "default";
+  const failClosed = cfg.failClosed ?? false;
+  const store = cfg.store;
+
+  const twoTier = store
+    ? new TwoTierRateLimiter({
+        capacity,
+        refillPerSec,
+        maxBuckets: cfg.maxBuckets,
+        store,
+        failClosed,
+      })
+    : null;
 
   return async (c: Context, next: Next) => {
     ensureSweepTimer();
     sweepIfDue();
+
+    const id = `${scope}:${keyFn(c)}`;
+    const now = Date.now();
+
+    if (twoTier) {
+      const res = await twoTier.consume(id, now);
+      if (!res.allowed) {
+        return c.json(
+          { error: "rate_limited", scope, reason: res.reason, retry_after_sec: res.retryAfterSec },
+          429,
+          { "retry-after": String(res.retryAfterSec ?? 1) },
+        );
+      }
+      await next();
+      return;
+    }
 
     const maxBuckets = cfg.maxBuckets ?? (
       typeof Deno !== "undefined" && Deno.env?.get("RATE_LIMIT_MAX_BUCKETS")
         ? parseInt(Deno.env.get("RATE_LIMIT_MAX_BUCKETS")!) || DEFAULT_MAX_BUCKETS
         : DEFAULT_MAX_BUCKETS
     );
-
-    const id = `${scope}:${keyFn(c)}`;
-    const now = Date.now();
 
     let bucket = buckets.get(id);
     if (bucket) {
