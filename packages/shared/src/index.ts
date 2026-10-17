@@ -9,3 +9,5 @@ export type { AssetCode } from "./constants.ts";
 export * from "./redact.ts";
 export * from "./checkout-token.ts";
 export * from "./rate_limiter.ts";
+export * from "./rate.ts";
+
