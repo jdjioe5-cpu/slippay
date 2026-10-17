@@ -86,7 +86,7 @@ r.post("/", requireApiKey, async (c) => {
 
   const { data, error } = insertRes;
   if (error) return c.json({ error: "create_failed" }, 400);
-  const token = await signCheckoutToken(data.id as string);
+  const token = await signCheckoutToken(data.id as string, data.expires_at ?? expiresAt);
 
   return c.json({
     order: data,
