@@ -306,5 +306,26 @@ Deno.test("Orders route platform fee calculation floors the fee and preserves ne
   assertEquals(split2.feeStroops + split2.netStroops, 19n);
 });
 
+Deno.test("Cross-layer fee identity test asserts against shared vector table (Issue #221)", async () => {
+  const { calculateFeeSplitStellar, stellarToStroops } = await import("@slippay/shared");
+  const vectorsUrl = new URL("../../../../packages/shared/src/vectors/fee_vectors.json", import.meta.url);
+  const vectorsText = await Deno.readTextFile(vectorsUrl);
+  const vectors = JSON.parse(vectorsText);
+
+  for (const vec of vectors) {
+    const split = calculateFeeSplitStellar(vec.amount_stellar, vec.fee_bps);
+    assertEquals(split.feeStellar, vec.expected_fee_stellar, `fee mismatch on ${vec.id}`);
+    assertEquals(split.netStellar, vec.expected_net_stellar, `net mismatch on ${vec.id}`);
+    assertEquals(split.feeStroops, BigInt(vec.expected_fee_stroops), `fee stroop mismatch on ${vec.id}`);
+    assertEquals(split.netStroops, BigInt(vec.expected_net_stroops), `net stroop mismatch on ${vec.id}`);
+    assertEquals(
+      stellarToStroops(split.netStellar) + stellarToStroops(split.feeStellar),
+      stellarToStroops(vec.amount_stellar),
+      `balance identity violated on ${vec.id}`
+    );
+  }
+});
+
+
 
 

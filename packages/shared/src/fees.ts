@@ -12,6 +12,23 @@
  *   `let net: i128 = amount - fee;`
  * and apps/listener/src/matcher.ts integer stroop arithmetic.
  */
+import feeVectors from "./vectors/fee_vectors.json" with { type: "json" };
+
+
+export interface FeeVector {
+  id: string;
+  description: string;
+  amount_stroops: string;
+  amount_stellar: string;
+  fee_bps: number;
+  expected_fee_stroops: string;
+  expected_net_stroops: string;
+  expected_fee_stellar: string;
+  expected_net_stellar: string;
+}
+
+export const FEE_VECTORS: FeeVector[] = feeVectors as FeeVector[];
+
 
 /**
  * Parse a Stellar amount string ("1234.5678901") into BigInt stroops.
