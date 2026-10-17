@@ -10,4 +10,6 @@ export * from "./redact.ts";
 export * from "./checkout-token.ts";
 export * from "./rate_limiter.ts";
 export * from "./rate.ts";
+export * from "./client_ip.ts";
+
 
