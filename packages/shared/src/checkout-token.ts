@@ -137,9 +137,9 @@ export async function verifyCheckoutTokenWithSecret(
   let sigStr: string;
 
   if (parts.length === 4) {
-    [version, tokenPurpose, expStr, sigStr] = parts;
+    [version, tokenPurpose, expStr, sigStr] = parts as [string, string, string, string];
   } else if (parts.length === 3) {
-    [version, expStr, sigStr] = parts;
+    [version, expStr, sigStr] = parts as [string, string, string];
     tokenPurpose = DEFAULT_CHECKOUT_TOKEN_PURPOSE;
   } else {
     return false;
@@ -181,7 +181,7 @@ export async function verifyCheckoutTokenWithSecret(
   try {
     const key = await getCheckoutTokenKey(secret);
     const message = `${version}:${tokenPurpose}:${orderId}:${expSec}`;
-    return await crypto.subtle.verify("HMAC", key, providedSig, ENC.encode(message));
+    return await crypto.subtle.verify("HMAC", key, providedSig as unknown as BufferSource, ENC.encode(message));
   } catch {
     return false;
   }

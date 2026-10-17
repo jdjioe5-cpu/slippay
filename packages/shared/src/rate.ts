@@ -76,8 +76,9 @@ function resolveEnv(key: string, envGetter?: (k: string) => string | undefined):
   }
   // Try process.env
   try {
-    if (typeof process !== "undefined" && process.env) {
-      return process.env[key];
+    const proc = (globalThis as any).process;
+    if (proc && proc.env) {
+      return proc.env[key];
     }
   } catch {
     // ignore

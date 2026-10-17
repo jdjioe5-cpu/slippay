@@ -79,7 +79,8 @@ export function isLoopback(rawHost?: string | null): boolean {
   const segments = host.split(":");
   if (segments.length === 8) {
     const allZeroLeading = segments.slice(0, 7).every((s) => /^0+$/.test(s));
-    const lastOne = /^0*1$/.test(segments[7]);
+    const lastPart = segments[7];
+    const lastOne = lastPart ? /^0*1$/.test(lastPart) : false;
     if (allZeroLeading && lastOne) {
       return true;
     }
