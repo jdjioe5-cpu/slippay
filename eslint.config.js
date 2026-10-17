@@ -14,8 +14,16 @@ export default tseslint.config(
   // Base JS recommended rules
   js.configs.recommended,
 
-  // TypeScript recommended rules (type-aware)
-  ...tseslint.configs.recommended,
+  // TypeScript recommended rules (actually type-aware, fixes #165)
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
 
   // React Hooks + Refresh
   {
