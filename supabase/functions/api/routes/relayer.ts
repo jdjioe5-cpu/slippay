@@ -140,6 +140,9 @@ r.post("/deploy", async (c) => {
     new Address(admin).toScVal(),
     nativeToScVal(BigInt(MAX_ABS), { type: "i128" }),
   ];
+  const ctorCheck = validateConstructorArgs(ctorArgs, admin);
+  if (!ctorCheck.ok) return c.json({ error: ctorCheck.reason }, 400);
+
   const deployOp = Operation.createCustomContract({
     address: new Address(admin),
     wasmHash: toB(hexToBytes(WASM_HASH_HEX)),
@@ -178,11 +181,82 @@ r.post("/deploy", async (c) => {
   return c.json({ wallet_id: walletId, funded: FUND_AMOUNT });
 });
 
-interface Verdict { ok: boolean; reason?: string }
+export interface Verdict { ok: boolean; reason?: string }
+
+/**
+ * Validate smart-wallet constructor arguments for sponsored deployment.
+ * Enforces strict shape:
+ *   args[0]: uncompressed secp256r1 public key (65 bytes, 0x04 prefix)
+ *   args[1]: hashed credential id (32 bytes SHA-256)
+ *   args[2]: admin address (must match the sponsor)
+ *   args[3]: max_abs integer limit (positive i128 <= maxAbsCeiling)
+ */
+export function validateConstructorArgs(
+  args: xdr.ScVal[],
+  sponsorPubkey: string,
+  maxAbsCeiling: bigint = BigInt(MAX_ABS),
+): Verdict {
+  if (!args || args.length !== 4) {
+    return { ok: false, reason: "bad_ctor_args_count" };
+  }
+
+  // 1. passkey pubkey: 65 bytes, uncompressed secp256r1 with 0x04 prefix
+  const pubVal = args[0];
+  if (pubVal.switch().name !== "scvBytes") {
+    return { ok: false, reason: "bad_passkey_pubkey" };
+  }
+  const pubBytes = new Uint8Array(pubVal.bytes());
+  if (pubBytes.length !== 65 || pubBytes[0] !== 0x04) {
+    return { ok: false, reason: "bad_passkey_pubkey" };
+  }
+
+  // 2. credential id hash: 32 bytes (SHA-256)
+  const credVal = args[1];
+  if (credVal.switch().name !== "scvBytes") {
+    return { ok: false, reason: "bad_cred_id" };
+  }
+  const credBytes = new Uint8Array(credVal.bytes());
+  if (credBytes.length !== 32) {
+    return { ok: false, reason: "bad_cred_id" };
+  }
+
+  // 3. admin address: must match sponsor
+  const adminVal = args[2];
+  if (adminVal.switch().name !== "scvAddress") {
+    return { ok: false, reason: "admin_not_sponsor" };
+  }
+  let adminAddr: string;
+  try {
+    adminAddr = Address.fromScVal(adminVal).toString();
+  } catch {
+    return { ok: false, reason: "admin_not_sponsor" };
+  }
+  if (adminAddr !== sponsorPubkey) {
+    return { ok: false, reason: "admin_not_sponsor" };
+  }
+
+  // 4. max_abs: i128 <= maxAbsCeiling
+  const maxAbsVal = args[3];
+  if (maxAbsVal.switch().name !== "scvI128") {
+    return { ok: false, reason: "max_abs_not_i128" };
+  }
+  const parts = maxAbsVal.i128();
+  const hi = BigInt(parts.hi().toString());
+  const lo = BigInt(parts.lo().toString());
+  const maxAbs = (hi << 64n) + lo;
+  if (maxAbs <= 0n) {
+    return { ok: false, reason: "max_abs_not_positive" };
+  }
+  if (maxAbs > maxAbsCeiling) {
+    return { ok: false, reason: "max_abs_over_cap" };
+  }
+
+  return { ok: true };
+}
 
 // THE trust boundary: decide whether a tx is a legitimate slippay op the
 // sponsor will pay gas for. Fail-closed on anything unexpected.
-function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
+export function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
   let tx: ReturnType<typeof TransactionBuilder.fromXDR>;
   try {
     tx = TransactionBuilder.fromXDR(txXdr, PASSPHRASE);
@@ -202,20 +276,26 @@ function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
   const hf = op.func;
   const kind = hf.switch().name;
 
-  // (a) Deploy of the slippay passkey wallet — wasm hash must match.
+  // (a) Deploy of the slippay passkey wallet — wasm hash and constructor arguments must match.
   if (kind === "hostFunctionTypeCreateContractV2" || kind === "hostFunctionTypeCreateContract") {
+    if (kind !== "hostFunctionTypeCreateContractV2") {
+      return { ok: false, reason: "deploy_must_be_v2" };
+    }
     try {
-      const cc = kind === "hostFunctionTypeCreateContractV2"
-        ? hf.createContractV2()
-        : hf.createContract();
+      const cc = hf.createContractV2();
       const exec = cc.executable();
       if (exec.switch().name !== "contractExecutableWasm") {
         return { ok: false, reason: "deploy_not_wasm" };
       }
       const wasmHash = hex(new Uint8Array(exec.wasmHash()));
-      if (!WASM_HASH_HEX || wasmHash !== WASM_HASH_HEX) {
+      const expectedWasm = (Deno.env.get("RELAYER_WASM_HASH") ?? WASM_HASH_HEX).toLowerCase();
+      if (!expectedWasm || wasmHash !== expectedWasm) {
         return { ok: false, reason: "wrong_wasm_hash" };
       }
+      const ctorArgs = cc.constructorArgs();
+      const ctorVerdict = validateConstructorArgs(ctorArgs, sponsorPubkey);
+      if (!ctorVerdict.ok) return ctorVerdict;
+
       return { ok: true };
     } catch (e) {
       return { ok: false, reason: `deploy_parse: ${String((e as Error).message ?? e)}` };
