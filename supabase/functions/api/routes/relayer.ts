@@ -51,25 +51,165 @@ const r = new Hono();
 r.use("/*", rateLimit({ capacity: 12, refillPerSec: 0.1, scope: "relayer" }));
 
 function sponsor(): Keypair | null {
-  if (!SPONSOR_SECRET) return null;
-  try { return Keypair.fromSecret(SPONSOR_SECRET); } catch { return null; }
+  const secret = Deno.env.get("RELAYER_SECRET") ?? SPONSOR_SECRET;
+  if (!secret) return null;
+  try { return Keypair.fromSecret(secret); } catch { return null; }
+}
+
+function getWasmHash(): string {
+  return (Deno.env.get("RELAYER_WASM_HASH") ?? WASM_HASH_HEX).toLowerCase();
 }
 
 function hex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+// Token challenge store for single-use deploy authorization.
+export interface DeployTokenRecord {
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+  used: boolean;
+  boundPubKeyHex?: string;
+}
+
+const DEPLOY_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DEPLOY_TOKENS = new Map<string, DeployTokenRecord>();
+
+export function issueDeployToken(boundPubKeyHex?: string): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const token = hex(bytes);
+  const now = Date.now();
+  DEPLOY_TOKENS.set(token, {
+    token,
+    createdAt: now,
+    expiresAt: now + DEPLOY_TOKEN_TTL_MS,
+    used: false,
+    boundPubKeyHex: boundPubKeyHex?.toLowerCase(),
+  });
+  // Clean up expired tokens when map grows
+  if (DEPLOY_TOKENS.size > 1000) {
+    for (const [k, v] of DEPLOY_TOKENS.entries()) {
+      if (v.expiresAt < now) DEPLOY_TOKENS.delete(k);
+    }
+  }
+  return token;
+}
+
+export function verifyAndConsumeDeployToken(
+  token: string,
+  passkeyPubkeyHex: string,
+): { ok: boolean; reason?: string } {
+  const record = DEPLOY_TOKENS.get(token);
+  if (!record) {
+    return { ok: false, reason: "invalid_or_expired_deploy_token" };
+  }
+  if (record.used) {
+    return { ok: false, reason: "deploy_token_already_used" };
+  }
+  const now = Date.now();
+  if (now > record.expiresAt) {
+    DEPLOY_TOKENS.delete(token);
+    return { ok: false, reason: "deploy_token_expired" };
+  }
+  const normalizedPub = passkeyPubkeyHex.toLowerCase();
+  if (record.boundPubKeyHex && record.boundPubKeyHex !== normalizedPub) {
+    return { ok: false, reason: "deploy_token_bound_to_different_pubkey" };
+  }
+  record.boundPubKeyHex = normalizedPub;
+  record.used = true;
+  return { ok: true };
+}
+
+export function _resetDeployTokensForTest(): void {
+  DEPLOY_TOKENS.clear();
+}
+
+// Float budget management: explicit daily ceiling denominated in stroops (default 10 XLM).
+export interface FundedWalletLog {
+  wallet_id: string;
+  amount: string; // stroops
+  timestamp: string;
+  admin: string;
+}
+
+const DAILY_FLOAT_BUDGET_DEFAULT = "100000000"; // 10 XLM = 100,000,000 stroops
+let dailySpendWindowDay = Math.floor(Date.now() / (86400 * 1000));
+let dailySpentFloatStroops = 0n;
+const FUNDED_WALLETS_LOG: FundedWalletLog[] = [];
+
+export function getDailyFloatBudget(): bigint {
+  return BigInt(Deno.env.get("RELAYER_DAILY_FLOAT_BUDGET") ?? DAILY_FLOAT_BUDGET_DEFAULT);
+}
+
+export function getDailyFloatSpend(): bigint {
+  const currentDay = Math.floor(Date.now() / (86400 * 1000));
+  if (currentDay !== dailySpendWindowDay) {
+    dailySpendWindowDay = currentDay;
+    dailySpentFloatStroops = 0n;
+  }
+  return dailySpentFloatStroops;
+}
+
+export function checkAndReserveDailyFloat(fundAmount: bigint): { ok: boolean; remaining: bigint; reason?: string } {
+  const budget = getDailyFloatBudget();
+  const spent = getDailyFloatSpend();
+  if (spent + fundAmount > budget) {
+    return {
+      ok: false,
+      remaining: budget > spent ? budget - spent : 0n,
+      reason: "daily_float_budget_exhausted",
+    };
+  }
+  return {
+    ok: true,
+    remaining: budget - (spent + fundAmount),
+  };
+}
+
+export function recordFundedWallet(entry: FundedWalletLog): void {
+  dailySpentFloatStroops += BigInt(entry.amount);
+  FUNDED_WALLETS_LOG.push(entry);
+}
+
+export function getFundedWalletsLog(): FundedWalletLog[] {
+  return [...FUNDED_WALLETS_LOG];
+}
+
+export function _resetDailyFloatBudgetForTest(): void {
+  dailySpendWindowDay = Math.floor(Date.now() / (86400 * 1000));
+  dailySpentFloatStroops = 0n;
+  FUNDED_WALLETS_LOG.length = 0;
+}
+
 // GET /v1/relayer/info — the browser needs the sponsor pubkey (to set as tx
-// source) + the wasm hash + network. Read-only, no secret leaked.
+// source) + the wasm hash + network + a single-use deploy challenge token.
 r.get("/info", (c) => {
   const kp = sponsor();
   if (!kp) return c.json({ error: "relayer_not_configured" }, 503);
+  const token = issueDeployToken();
+  const budget = getDailyFloatBudget();
+  const spent = getDailyFloatSpend();
   return c.json({
     sponsor: kp.publicKey(),
     network: IS_MAINNET ? "PUBLIC" : "TESTNET",
     rpc: RPC_URL,
     wasm_hash: WASM_HASH_HEX || null,
     amount_cap: AMOUNT_CAP.toString(),
+    fund_amount: FUND_AMOUNT,
+    daily_float_budget: budget.toString(),
+    daily_float_spent: spent.toString(),
+    deploy_token: token,
+  });
+});
+
+// GET /v1/relayer/funded — reconcilable audit ledger of funded wallets and spend.
+r.get("/funded", (c) => {
+  return c.json({
+    daily_budget: getDailyFloatBudget().toString(),
+    daily_spent: getDailyFloatSpend().toString(),
+    wallets: getFundedWalletsLog(),
   });
 });
 
@@ -107,21 +247,31 @@ async function signSubmit(
   return { ok: true, returnValue: (res as { returnValue?: xdr.ScVal }).returnValue };
 }
 
-// POST /v1/relayer/deploy { passkey_pubkey_hex, cred_id_hex } — the relayer
-// deploys a smart-wallet bound to the device passkey (relayer = source + admin,
-// pays the deploy fee) and fronts a small XLM float into it (demo). Built and
-// signed entirely by the relayer (it controls the construction), so no XDR
-// validation is needed here — the only spend is the bounded FUND_AMOUNT + gas.
+// POST /v1/relayer/deploy { passkey_pubkey_hex, cred_id_hex, deploy_token } —
+// deploys a smart-wallet bound to the device passkey with single-use challenge
+// verification and daily float budget enforcement.
 r.post("/deploy", async (c) => {
-  const kp = sponsor();
-  if (!kp) return c.json({ error: "relayer_not_configured" }, 503);
-  if (!WASM_HASH_HEX) return c.json({ error: "wasm_hash_not_configured" }, 503);
-
-  let body: { passkey_pubkey_hex?: string; cred_id_hex?: string };
+  let body: { passkey_pubkey_hex?: string; cred_id_hex?: string; deploy_token?: string };
   try { body = await c.req.json(); } catch { return c.json({ error: "bad_json" }, 400); }
   if (!body.passkey_pubkey_hex || !body.cred_id_hex) {
     return c.json({ error: "missing_passkey_fields" }, 400);
   }
+
+  // 1. Authenticate via single-use deploy challenge token.
+  const deployToken = body.deploy_token
+    ?? c.req.header("x-deploy-token")
+    ?? (c.req.header("authorization")?.replace(/^Bearer\s+/i, ""));
+
+  if (!deployToken) {
+    return c.json({ error: "unauthenticated", reason: "missing_deploy_token" }, 401);
+  }
+
+  const tokenVerdict = verifyAndConsumeDeployToken(deployToken, body.passkey_pubkey_hex);
+  if (!tokenVerdict.ok) {
+    return c.json({ error: "unauthenticated", reason: tokenVerdict.reason }, 401);
+  }
+
+  // 2. Validate passkey parameters before spending resources.
   let pubKey: Uint8Array, credId: Uint8Array;
   try { pubKey = hexToBytes(body.passkey_pubkey_hex); credId = hexToBytes(body.cred_id_hex); }
   catch { return c.json({ error: "bad_hex" }, 400); }
@@ -129,11 +279,28 @@ r.post("/deploy", async (c) => {
     return c.json({ error: "bad_passkey_pubkey" }, 400);
   }
 
+  // 3. Enforce daily float budget ceiling (XLM denominated).
+  const fundStroops = BigInt(Deno.env.get("RELAYER_FUND_AMOUNT") ?? FUND_AMOUNT);
+  const budgetVerdict = checkAndReserveDailyFloat(fundStroops);
+  if (!budgetVerdict.ok) {
+    return c.json({
+      error: "rate_limited",
+      reason: budgetVerdict.reason,
+      budget: getDailyFloatBudget().toString(),
+      spent: getDailyFloatSpend().toString(),
+    }, 429);
+  }
+
+  const kp = sponsor();
+  if (!kp) return c.json({ error: "relayer_not_configured" }, 503);
+  const wasmHashHex = getWasmHash();
+  if (!wasmHashHex) return c.json({ error: "wasm_hash_not_configured" }, 503);
+
   const server = new SorobanRpc.Server(RPC_URL);
   const admin = kp.publicKey();
   const credId32 = await sha256(credId);
 
-  // 1. Deploy the wallet bound to the passkey.
+  // 4. Deploy the wallet bound to the passkey.
   const ctorArgs: xdr.ScVal[] = [
     xdr.ScVal.scvBytes(toB(pubKey)),
     xdr.ScVal.scvBytes(toB(credId32)),
@@ -142,7 +309,7 @@ r.post("/deploy", async (c) => {
   ];
   const deployOp = Operation.createCustomContract({
     address: new Address(admin),
-    wasmHash: toB(hexToBytes(WASM_HASH_HEX)),
+    wasmHash: toB(hexToBytes(wasmHashHex)),
     salt: toB(crypto.getRandomValues(new Uint8Array(32))),
     constructorArgs: ctorArgs,
   });
@@ -154,7 +321,7 @@ r.post("/deploy", async (c) => {
   if (!d.ok || !d.returnValue) return c.json({ error: "deploy_failed", reason: d.reason }, 502);
   const walletId = Address.fromScVal(d.returnValue).toString();
 
-  // 2. Front the demo float into the wallet (sponsor → wallet, native SAC).
+  // 5. Front the demo float into the wallet (sponsor → wallet, native SAC).
   const sac = Asset.native().contractId(PASSPHRASE);
   const fundOp = Operation.invokeHostFunction({
     func: xdr.HostFunction.hostFunctionTypeInvokeContract(new xdr.InvokeContractArgs({
@@ -163,7 +330,7 @@ r.post("/deploy", async (c) => {
       args: [
         new Address(admin).toScVal(),
         new Address(walletId).toScVal(),
-        nativeToScVal(BigInt(FUND_AMOUNT), { type: "i128" }),
+        nativeToScVal(fundStroops, { type: "i128" }),
       ],
     })),
     auth: [],
@@ -174,6 +341,14 @@ r.post("/deploy", async (c) => {
   }).addOperation(fundOp).setTimeout(60).build();
   const f = await signSubmit(server, ftx, kp);
   if (!f.ok) return c.json({ error: "fund_failed", reason: f.reason, wallet_id: walletId }, 502);
+
+  // 6. Record in daily budget and reconcilable wallet ledger.
+  recordFundedWallet({
+    wallet_id: walletId,
+    amount: FUND_AMOUNT,
+    timestamp: new Date().toISOString(),
+    admin,
+  });
 
   return c.json({ wallet_id: walletId, funded: FUND_AMOUNT });
 });

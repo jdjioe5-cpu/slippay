@@ -112,7 +112,11 @@ export default function PayDemo() {
       const resp = await fetch(`${RELAYER_BASE}/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ passkey_pubkey_hex: bytesToHex(h.pubKey), cred_id_hex: bytesToHex(h.credId) }),
+        body: JSON.stringify({
+          passkey_pubkey_hex: bytesToHex(h.pubKey),
+          cred_id_hex: bytesToHex(h.credId),
+          deploy_token: info.deploy_token,
+        }),
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok || !j.wallet_id) throw new Error("deploy: " + (j.reason ?? j.error ?? resp.status));

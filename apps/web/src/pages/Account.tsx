@@ -54,7 +54,11 @@ export default function Account() {
       setStep("Building your wallet on-chain…");
       const resp = await fetch(`${RELAYER_BASE}/deploy`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ passkey_pubkey_hex: hex(h.pubKey), cred_id_hex: hex(h.credId) }),
+        body: JSON.stringify({
+          passkey_pubkey_hex: hex(h.pubKey),
+          cred_id_hex: hex(h.credId),
+          deploy_token: info.deploy_token,
+        }),
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok || !j.wallet_id) throw new Error("deploy: " + (j.reason ?? j.error ?? resp.status));
