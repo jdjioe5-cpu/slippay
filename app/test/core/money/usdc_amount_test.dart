@@ -51,5 +51,35 @@ void main() {
       expect(a.toHuman(), '0.30'); // the classic 0.1+0.2 float trap, avoided
       expect(a.toMinorString(), '3000000');
     });
+
+    test('allows exact subtraction to zero', () {
+      final a = UsdcAmount.parse('5.00');
+      expect((a - a).toHuman(), '0.00');
+      expect((a - a) == UsdcAmount.zero, isTrue);
+    });
+
+    test('throws ArgumentError on subtraction underflow', () {
+      final smaller = UsdcAmount.parse('2.00');
+      final larger = UsdcAmount.parse('5.00');
+      expect(() => smaller - larger, throwsArgumentError);
+    });
+
+    test('clampedSubtract gracefully clamps to zero when underflowing', () {
+      final smaller = UsdcAmount.parse('2.00');
+      final larger = UsdcAmount.parse('5.00');
+      expect(smaller.clampedSubtract(larger), UsdcAmount.zero);
+      expect(larger.clampedSubtract(smaller), UsdcAmount.parse('3.00'));
+    });
+  });
+
+  group('non-negative invariant enforcement', () {
+    test('direct constructor rejects negative BigInt', () {
+      expect(() => UsdcAmount(BigInt.from(-1)), throwsA(anything));
+    });
+
+    test('fromMinor rejects negative string/int', () {
+      expect(() => UsdcAmount.fromMinor('-1000000'), throwsFormatException);
+      expect(() => UsdcAmount.fromMinor(BigInt.from(-50)), throwsFormatException);
+    });
   });
 }

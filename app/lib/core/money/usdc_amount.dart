@@ -6,9 +6,13 @@ import 'package:decimal/decimal.dart';
 ///
 /// Stellar assets carry 7 decimal places, so 1 USDC == 10,000,000 minor units.
 class UsdcAmount implements Comparable<UsdcAmount> {
-  const UsdcAmount(this.minor);
+  UsdcAmount(this.minor) : assert(!minor.isNegative, 'UsdcAmount cannot be negative: $minor') {
+    if (minor.isNegative) {
+      throw ArgumentError.value(minor, 'minor', 'UsdcAmount cannot be negative');
+    }
+  }
 
-  /// Minor units (10^-7 USDC). Always an integer, never negative for a balance.
+  /// Minor units (10^-7 USDC). Always an integer, strictly non-negative.
   final BigInt minor;
 
   static const int decimals = 7;
@@ -19,6 +23,9 @@ class UsdcAmount implements Comparable<UsdcAmount> {
   /// Build from a raw minor-unit string/int (what the chain returns).
   factory UsdcAmount.fromMinor(Object value) {
     final b = value is BigInt ? value : BigInt.parse(value.toString());
+    if (b.isNegative) {
+      throw FormatException('minor units cannot be negative: $b');
+    }
     return UsdcAmount(b);
   }
 
@@ -38,6 +45,16 @@ class UsdcAmount implements Comparable<UsdcAmount> {
 
   /// Human string with up to 7 decimals, trailing zeros trimmed (min 2 shown).
   String toHuman({int minFractionDigits = 2}) {
+    if (minor.isNegative) {
+      final absMinor = minor.abs();
+      final whole = absMinor ~/ _scale;
+      final frac = (absMinor % _scale).toString().padLeft(decimals, '0');
+      var trimmed = frac.replaceFirst(RegExp(r'0+$'), '');
+      if (trimmed.length < minFractionDigits) {
+        trimmed = trimmed.padRight(minFractionDigits, '0');
+      }
+      return '-${trimmed.isEmpty ? '$whole' : '$whole.$trimmed'}';
+    }
     final whole = minor ~/ _scale;
     final frac = (minor % _scale).toString().padLeft(decimals, '0');
     var trimmed = frac.replaceFirst(RegExp(r'0+$'), '');
@@ -51,7 +68,23 @@ class UsdcAmount implements Comparable<UsdcAmount> {
   String toMinorString() => minor.toString();
 
   UsdcAmount operator +(UsdcAmount o) => UsdcAmount(minor + o.minor);
-  UsdcAmount operator -(UsdcAmount o) => UsdcAmount(minor - o.minor);
+
+  /// Subtract [o]. Throws [ArgumentError] if the result would be negative (underflow).
+  UsdcAmount operator -(UsdcAmount o) {
+    final diff = minor - o.minor;
+    if (diff.isNegative) {
+      throw ArgumentError(
+        'UsdcAmount underflow: cannot subtract $o from $this resulting in negative balance',
+      );
+    }
+    return UsdcAmount(diff);
+  }
+
+  /// Subtract [o], clamping the result to [UsdcAmount.zero] if [o] is greater than this.
+  UsdcAmount clampedSubtract(UsdcAmount o) {
+    final diff = minor - o.minor;
+    return diff.isNegative ? UsdcAmount.zero : UsdcAmount(diff);
+  }
   bool operator >(UsdcAmount o) => minor > o.minor;
   bool operator <(UsdcAmount o) => minor < o.minor;
 
