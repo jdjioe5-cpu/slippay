@@ -7,7 +7,7 @@ import { generateMemo } from "../lib/memo.ts";
 import { getBrlPerUsdc } from "../lib/rate.ts";
 import { serviceClient } from "../lib/supabase.ts";
 import { signCheckoutToken, verifyCheckoutToken } from "../lib/checkout-token.ts";
-import { mapDbError } from "../lib/db-error.ts";
+import { mapDbError, type ApiErrorStatus } from "../lib/db-error.ts";
 
 type Vars = { merchant: { id: string; [k: string]: unknown }; supabase: SupabaseClient };
 const r = new Hono<{ Variables: Vars }>();
@@ -110,7 +110,7 @@ r.get("/", requireApiKeyOrJwt, async (c) => {
   const { data, error } = await q;
   if (error) {
     const m = mapDbError(error);
-    return c.json({ error: m.code }, m.status as 400 | 409);
+    return c.json({ error: m.code }, m.status as ApiErrorStatus);
   }
   const orders = (data ?? []).map((o: Record<string, unknown>) => ({
     ...o,

@@ -3,9 +3,11 @@
 // names, regex patterns, and (with bad luck) row contents. Centralizing here
 // keeps the routes shallow and consistent.
 
+export type ApiErrorStatus = 400 | 403 | 404 | 409 | 500;
+
 export interface ApiError {
   code: string;
-  status: number;
+  status: ApiErrorStatus;
 }
 
 interface PgError {
@@ -40,5 +42,6 @@ export function mapDbError(err: PgError | null | undefined): ApiError {
   if (err.message?.includes("violates foreign key")) {
     return PG_CODE_MAP["23503"]!;
   }
-  return { code: "operation_failed", status: 400 };
+  console.error(`[db-error] unmapped database failure code="${err.code ?? "unknown"}"`);
+  return { code: "internal_error", status: 500 };
 }
