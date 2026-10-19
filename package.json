@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:ecosystem": "node --check ecosystem.config.cjs && node scripts/test-ecosystem.cjs",
     "lint": "pnpm -r lint",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",

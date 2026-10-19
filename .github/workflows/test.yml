@@ -29,6 +29,8 @@ jobs:
       run: pnpm --filter @slippay/shared build
     - name: Lint
       run: pnpm -r lint
+    - name: Validate PM2 ecosystem configuration
+      run: pnpm test:ecosystem
     - name: Workspace tests (shared, web, listener)
       run: pnpm -r test
     - name: Start local Supabase stack
