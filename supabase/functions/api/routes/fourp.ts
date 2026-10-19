@@ -17,6 +17,7 @@ import { rateLimit } from "../middleware/rate_limit.ts";
 import { FourPClient, FourPError } from "../lib/fourp/client.ts";
 import { getRampTx, saveRampTx } from "../lib/ramp/store.ts";
 import { isAllowedOrigin } from "@slippay/shared";
+import { redactSensitiveQueryParams, timingSafeEqual } from "../lib/security.ts";
 
 const r = new Hono();
 
@@ -63,12 +64,27 @@ r.post("/webhook", async (c) => {
     console.log(`4p webhook from unexpected ip chain: ${xff.join(",")}`);
   }
 
+  // Security (Audit-004 · Issue 497): Bearer secrets must NEVER be accepted from
+  // the query string. Query parameters leak into access logs, CDNs, referrers,
+  // and telemetry. We accept the token strictly from the JSON body.
   let token: string | undefined;
   try {
     const body = await c.req.json();
-    token = body?.token ?? body?.notification_token ?? body?.notificationToken;
-  } catch { /* token may be in query */ }
-  token = token ?? c.req.query("token") ?? c.req.query("notification_token");
+    if (body && typeof body === "object") {
+      const candidate = body.token ?? body.notification_token ?? body.notificationToken;
+      if (typeof candidate === "string" && candidate.trim()) {
+        token = candidate.trim();
+      }
+    }
+  } catch {
+    // Body is empty or not valid JSON
+  }
+
+  // Warn and redact if any caller still passes tokens in the query string
+  if (c.req.query("token") || c.req.query("notification_token") || c.req.query("notificationToken")) {
+    console.warn(`[sec] 4P webhook rejected query token from ${redactSensitiveQueryParams(c.req.url)}`);
+  }
+
   if (!token) return c.json({ error: "missing_token" }, 400);
 
   try {
