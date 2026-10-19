@@ -90,12 +90,19 @@ counterparty reputation. Each plugs in as another detector; the gate stays the s
 ## Endpoints (reference attester, `@slippay/attester`)
 
 ```
-GET  /pubkey                                  → attester ed25519 pubkey (register on any rail)
+GET  /pubkey                                  → [Public] attester ed25519 pubkey (register on any rail)
+POST /verify   {…, signature, pubkey}          → [Public] { valid }
 POST /register {agent_id, allowed_recipients, allowed_tools?, max_amount, max_per_window?}
-POST /attest   {agent_id, subscription_id, charges_done, recipient, amount, tools_used?}   → Stellar binding
-POST /attest   {agent_id, descriptor, recipient, amount, tools_used?}                       → generic binding
-POST /verify   {…, signature, pubkey}          → { valid }
+                                              → [Authenticated] binds agent_id to caller principal
+POST /attest   {agent_id, subscription_id, charges_done, recipient, amount, tools_used?}   → [Authenticated] Stellar binding
+POST /attest   {agent_id, descriptor, recipient, amount, tools_used?}                       → [Authenticated] generic binding
 ```
+
+### Security & Authentication Model
+
+- **Principal Identification**: Writing endpoints (`POST /register` and `POST /attest`) require authentication via `Authorization: Bearer <token>` or `X-API-Key: <key>`.
+- **Principal Binding**: When an agent's surface is registered, it is bound to the authenticated principal. Re-registration or surface tampering by any other principal is strictly rejected with `403 Forbidden`. Attestation requests are only honored if called by the owner principal.
+- **CORS Restriction**: Cross-origin requests are restricted to explicitly configured origins via `SLIPPAY_ATTESTER_ALLOWED_ORIGINS`. Wildcard `*` origins are completely disabled.
 
 ## Adopting AIA on a new rail
 

@@ -66,11 +66,16 @@ function persist() {
   catch (e) { console.error("attester: could not persist surfaces:", e?.message ?? e); }
 }
 
-/** Commit an agent's allowed surface. Returns a SHA-256 commitment of it. */
-export function commitSurface(s) {
+/** Commit an agent's allowed surface bound to an owner principal. Returns a SHA-256 commitment of it. */
+export function commitSurface(s, ownerPrincipal = null) {
   if (!s.agent_id) throw new Error("agent_id required");
+  const existing = surfaces.get(s.agent_id);
+  if (existing && existing.owner_principal && ownerPrincipal && existing.owner_principal !== ownerPrincipal) {
+    throw new Error(`agent_id ${s.agent_id} is owned by principal "${existing.owner_principal}"`);
+  }
   const surface = {
     agent_id: s.agent_id,
+    owner_principal: ownerPrincipal ?? existing?.owner_principal ?? null,
     allowed_recipients: s.allowed_recipients ?? [],
     allowed_tools: s.allowed_tools ?? null,        // null = tools not constrained
     max_amount: BigInt(s.max_amount ?? "0").toString(),
@@ -89,6 +94,7 @@ export function commitSurface(s) {
 }
 
 export function getSurface(agentId) { return surfaces.get(agentId) ?? null; }
+export function getSurfaceOwner(agentId) { return surfaces.get(agentId)?.owner_principal ?? null; }
 
 /** Why the action deviates from the committed surface, or null if clean. */
 export function surfaceDeviation(action, surface) {
