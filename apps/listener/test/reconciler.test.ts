@@ -57,4 +57,137 @@ describe("reconcileMatch", () => {
     // no throw, no error log assertion — surviving the call is the contract
     expect(mockDb.insert).toHaveBeenCalled();
   });
+
+  describe("bumpSubscriptionChargesDone (Issue #489)", () => {
+    it("two concurrent paid events advance charges_done by 2 under OCC conditional write", async () => {
+      // In-memory subscription table simulating concurrent access and latency
+      const subStore = {
+        id: "sub-concurrent-1",
+        charges_done: 0,
+        max_periods: 5,
+        status: "active",
+      };
+
+      const createSimulatedDb = () => {
+        return {
+          from: (table: string) => {
+            if (table !== "subscriptions") throw new Error(`Unexpected table ${table}`);
+            let condition: { col: string; val: any } | null = null;
+            let patchData: any = null;
+
+            return {
+              select: (_cols: string) => ({
+                eq: (_col: string, _val: string) => ({
+                  maybeSingle: async () => {
+                    // Small delay to ensure concurrent tasks interleave reads
+                    await new Promise((r) => setTimeout(r, 10));
+                    return { data: { ...subStore }, error: null };
+                  },
+                }),
+              }),
+              update: (patch: any) => {
+                patchData = patch;
+                const chain: any = {
+                  eq: (col: string, val: any) => {
+                    condition = { col, val };
+                    return chain;
+                  },
+                  is: (col: string, val: any) => {
+                    condition = { col, val };
+                    return chain;
+                  },
+                  select: () => ({
+                    maybeSingle: async () => {
+                      // Validate conditional write (OCC)
+                      if (condition?.col === "charges_done") {
+                        if (subStore.charges_done !== condition.val) {
+                          // Conflict: charges_done changed, return 0 rows
+                          return { data: null, error: null };
+                        }
+                      }
+                      // Apply update
+                      Object.assign(subStore, patchData);
+                      return { data: { ...subStore }, error: null };
+                    },
+                  }),
+                };
+                return chain;
+              },
+            };
+          },
+        } as any;
+      };
+
+      const db1 = createSimulatedDb();
+      const db2 = createSimulatedDb();
+
+      // Launch two concurrent reconciliations
+      const [res1, res2] = await Promise.all([
+        import("../src/reconciler.js").then((m) => m.bumpSubscriptionChargesDone(db1, "sub-concurrent-1")),
+        import("../src/reconciler.js").then((m) => m.bumpSubscriptionChargesDone(db2, "sub-concurrent-1")),
+      ]);
+
+      expect(res1).not.toBeNull();
+      expect(res2).not.toBeNull();
+      // Counter must advance by two
+      expect(subStore.charges_done).toBe(2);
+      expect(subStore.status).toBe("active");
+    });
+
+    it("expires subscription when charges_done reaches max_periods exactly", async () => {
+      const subStore = {
+        id: "sub-max-test",
+        charges_done: 2,
+        max_periods: 3,
+        status: "active",
+      };
+
+      const mockDbInstance: any = {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: { ...subStore }, error: null }),
+            }),
+          }),
+          update: (patch: any) => ({
+            eq: () => ({
+              eq: () => ({
+                select: () => ({
+                  maybeSingle: async () => {
+                    Object.assign(subStore, patch);
+                    return { data: { ...subStore }, error: null };
+                  },
+                }),
+              }),
+            }),
+          }),
+        }),
+      };
+
+      const { bumpSubscriptionChargesDone } = await import("../src/reconciler.js");
+      const result = await bumpSubscriptionChargesDone(mockDbInstance, "sub-max-test");
+
+      expect(result).not.toBeNull();
+      expect(result?.charges_done).toBe(3);
+      expect(result?.status).toBe("expired");
+      expect(subStore.charges_done).toBe(3);
+      expect(subStore.status).toBe("expired");
+    });
+
+    it("prefers atomic RPC if available on the database", async () => {
+      const rpcMock = vi.fn().mockResolvedValue({
+        data: [{ charges_done: 4, status: "expired" }],
+        error: null,
+      });
+      const dbWithRpc: any = {
+        rpc: rpcMock,
+      };
+
+      const { bumpSubscriptionChargesDone } = await import("../src/reconciler.js");
+      const result = await bumpSubscriptionChargesDone(dbWithRpc, "sub-rpc-1");
+
+      expect(rpcMock).toHaveBeenCalledWith("bump_subscription_charges_done", { sub_id: "sub-rpc-1" });
+      expect(result).toEqual({ charges_done: 4, status: "expired" });
+    });
+  });
 });
