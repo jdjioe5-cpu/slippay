@@ -38,49 +38,16 @@ class WC_Slippay_Webhook {
             exit;
         }
 
-        $sig = $this->get_signature_header();
-        if ( empty( $sig ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'missing signature header' ] );
-            exit;
-        }
-
-        // Listener emits "t=<unix>,v1=<hex>" over HMAC-SHA256(secret, "<t>.<body>").
-        // Reference: apps/listener/src/crypto.ts:3-13.
-        if ( ! preg_match( '/^t=(\d+),v1=([a-f0-9]{64})$/', $sig, $m ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'malformed signature' ] );
-            exit;
-        }
-        $t  = (int) $m[1];
-        $v1 = $m[2];
-
-        if ( abs( time() - $t ) > 300 ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'stale signature' ] );
-            exit;
-        }
-
-        $expected = hash_hmac( 'sha256', $t . '.' . $raw, $secret );
-        if ( ! hash_equals( $expected, $v1 ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'invalid signature' ] );
-            exit;
-        }
-
-        // Replay protection. Listener sends a per-delivery uuid in x-slippay-delivery-id
-        // (apps/listener/src/webhook.ts:35). Reject duplicates within a 24h window.
+        $sig         = $this->get_signature_header();
         $delivery_id = isset( $_SERVER['HTTP_X_SLIPPAY_DELIVERY_ID'] )
             ? sanitize_text_field( $_SERVER['HTTP_X_SLIPPAY_DELIVERY_ID'] )
             : '';
-        if ( $delivery_id !== '' ) {
-            $seen_key = 'slippay_seen_' . md5( $delivery_id );
-            if ( get_transient( $seen_key ) ) {
-                status_header( 409 );
-                echo wp_json_encode( [ 'error' => 'duplicate delivery' ] );
-                exit;
-            }
-            set_transient( $seen_key, 1, DAY_IN_SECONDS );
+
+        $check = $this->verify_and_check_replay( $raw, $sig, $delivery_id, $secret );
+        if ( ! $check['ok'] ) {
+            status_header( $check['code'] );
+            echo wp_json_encode( [ 'error' => $check['error'] ] );
+            exit;
         }
 
         $payload = json_decode( $raw, true );
@@ -174,5 +141,64 @@ class WC_Slippay_Webhook {
     private function get_gateway() {
         $gateways = WC()->payment_gateways()->payment_gateways();
         return isset( $gateways['slippay'] ) ? $gateways['slippay'] : null;
+    }
+
+    /**
+     * Verify webhook signature and apply replay protections.
+     *
+     * Receiver Contract & Security Parameters:
+     * - Authentication: HMAC-SHA256(secret, "$t.$raw") checked with constant-time hash_equals.
+     * - Freshness window: 300 seconds (5 minutes). Rejects deliveries where |time() - $t| > 300.
+     * - Mandatory Delivery ID: HTTP_X_SLIPPAY_DELIVERY_ID must be present. Missing ID returns 400.
+     * - Replay deduplication window: 24 hours (DAY_IN_SECONDS / 86400s). Deduplicated on both
+     *   the delivery ID and the signature hash ($v1) so a replayed payload cannot bypass the
+     *   guard even if the delivery ID is omitted, altered, or re-generated. Duplicates within 24h return 409 Conflict.
+     *
+     * @param string $raw Raw request body.
+     * @param string $sig Signature header value (t=<unix>,v1=<hex>).
+     * @param string $delivery_id Delivery id header value.
+     * @param string $secret Webhook secret.
+     * @return array [ 'ok' => bool, 'code' => int, 'error' => string|null ]
+     */
+    public function verify_and_check_replay( $raw, $sig, $delivery_id, $secret ) {
+        if ( empty( $sig ) ) {
+            return [ 'ok' => false, 'code' => 401, 'error' => 'missing signature header' ];
+        }
+
+        if ( ! preg_match( '/^t=(\d+),v1=([a-f0-9]{64})$/', $sig, $m ) ) {
+            return [ 'ok' => false, 'code' => 401, 'error' => 'malformed signature' ];
+        }
+        $t  = (int) $m[1];
+        $v1 = $m[2];
+
+        // Freshness window: 300 seconds (5 minutes)
+        if ( abs( time() - $t ) > 300 ) {
+            return [ 'ok' => false, 'code' => 401, 'error' => 'stale signature' ];
+        }
+
+        $expected = hash_hmac( 'sha256', $t . '.' . $raw, $secret );
+        if ( ! hash_equals( $expected, $v1 ) ) {
+            return [ 'ok' => false, 'code' => 401, 'error' => 'invalid signature' ];
+        }
+
+        // Replay protection: delivery ID is mandatory (apps/listener/src/webhook.ts:58).
+        if ( empty( $delivery_id ) ) {
+            return [ 'ok' => false, 'code' => 400, 'error' => 'missing delivery id' ];
+        }
+
+        // Deduplication window: 24 hours (DAY_IN_SECONDS).
+        // Keyed on both delivery ID and signature hash ($v1) so replayed payload cannot bypass guard.
+        $seen_delivery_key = 'slippay_seen_' . md5( $delivery_id );
+        $seen_sig_key      = 'slippay_sig_' . md5( $v1 );
+
+        if ( get_transient( $seen_delivery_key ) || get_transient( $seen_sig_key ) ) {
+            return [ 'ok' => false, 'code' => 409, 'error' => 'duplicate delivery' ];
+        }
+
+        $ttl = defined( 'DAY_IN_SECONDS' ) ? DAY_IN_SECONDS : 86400;
+        set_transient( $seen_delivery_key, 1, $ttl );
+        set_transient( $seen_sig_key, 1, $ttl );
+
+        return [ 'ok' => true, 'code' => 200, 'error' => null ];
     }
 }

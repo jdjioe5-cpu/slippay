@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:plugins": "php plugins/woocommerce-slippay/tests/WebhookReplayTest.php",
     "lint": "pnpm -r lint",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",

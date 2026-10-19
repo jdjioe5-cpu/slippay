@@ -106,6 +106,10 @@ Then activate from WordPress admin.
   if you suspect compromise; old key invalidates immediately.
 - Webhook handler rejects requests with missing or mismatched HMAC when a
   secret is configured. Use this in production.
+- **Webhook Freshness & Replay Guard**:
+  - Freshness window: strictly enforces `|time() - t| <= 300` seconds (5 minutes) to reject stale deliveries.
+  - Replay protection: `X-Slippay-Delivery-Id` is mandatory (missing ID rejected with 400).
+  - Deduplication window: 24 hours (`DAY_IN_SECONDS`) keyed on both delivery ID and HMAC signature hash (`$v1`), guaranteeing replayed deliveries within 24h are rejected with 409 Conflict even if headers are dropped.
 - `wc_get_orders` lookup by `_slippay_order_id` is exact-match; no fuzzy
   resolution that could let a malicious payload mark the wrong order paid.
 
