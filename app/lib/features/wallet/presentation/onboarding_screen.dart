@@ -50,7 +50,7 @@ class OnboardingScreen extends ConsumerWidget {
               const SizedBox(height: 20),
               const Text(
                 'Uma conta em dólar que ninguém congela. '
-                'A sua biometria é a chave, sem seed phrase, sem senha.',
+                'A sua biometria neste aparelho é a chave única, sem seed phrase e sem intermediários.',
                 style: TextStyle(fontSize: 17, height: 1.5, color: AppColors.gray),
               ),
               const Spacer(),

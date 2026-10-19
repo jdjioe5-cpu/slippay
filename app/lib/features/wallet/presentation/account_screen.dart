@@ -38,7 +38,7 @@ class AccountScreen extends ConsumerWidget {
             _row(Icons.shield_outlined, 'Non-custodial',
                 'A chave nunca sai do aparelho. O Slippay não move seu dinheiro.'),
             const SizedBox(height: 16),
-            _label('RECUPERAÇÃO'),
+            _label('RECUPERAÇÃO E LIMITES'),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.all(16),
@@ -46,21 +46,32 @@ class AccountScreen extends ConsumerWidget {
                 color: const Color(0x14B4402F),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Text(
-                'Adicione um segundo aparelho como recuperação. Com uma passkey só, '
-                'perder o aparelho é perder o acesso.',
-                style: TextStyle(fontSize: 13, color: AppColors.ink, height: 1.4),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded, size: 18, color: AppColors.leak),
+                      SizedBox(width: 8),
+                      Text(
+                        'Dispositivo único (v0.1)',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.leak,
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Esta carteira utiliza autenticação passkey restrita ao chip de segurança deste aparelho. '
+                    'A adição de um segundo signer para recuperação em múltiplos dispositivos ainda não está ativa no contrato on-chain. '
+                    'Perder este aparelho ou os dados biométricos locais resultará na perda irreversível do acesso aos fundos.',
+                    style: TextStyle(fontSize: 12, color: AppColors.ink, height: 1.4),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: () {
-                // TODO(chain): add a second signer to the smart-account contract.
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('segundo signer: pendente do chain adapter')),
-                );
-              },
-              child: const Text('ADICIONAR RECUPERAÇÃO'),
             ),
             const SizedBox(height: 28),
             TextButton(
