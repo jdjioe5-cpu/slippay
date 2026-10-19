@@ -50,3 +50,14 @@ jobs:
     - name: Stop Supabase
       if: always()
       run: supabase stop || true
+    - name: Set up Flutter
+      uses: subosito/flutter-action@48cac9ba620a628341017288da807b8183204e1c # v2.16.0
+      with:
+        flutter-version: '3.24.x'
+        channel: 'stable'
+        cache: true
+    - name: Flutter app tests
+      run: |
+        cd app
+        flutter pub get
+        flutter test

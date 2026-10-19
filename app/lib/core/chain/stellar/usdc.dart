@@ -20,8 +20,21 @@ class StellarConstants {
 
   static const String assetCode = 'USDC';
 
-  static StellarNetwork networkFromString(String s) =>
-      s.toUpperCase() == 'PUBLIC' ? StellarNetwork.public : StellarNetwork.testnet;
+  static StellarNetwork networkFromString(String s) {
+    switch (s.trim().toUpperCase()) {
+      case 'PUBLIC':
+      case 'MAINNET':
+        return StellarNetwork.public;
+      case 'TESTNET':
+        return StellarNetwork.testnet;
+      default:
+        throw ArgumentError.value(
+          s,
+          's',
+          'Unknown Stellar network: expected PUBLIC or TESTNET',
+        );
+    }
+  }
 
   static String passphrase(StellarNetwork n) =>
       n == StellarNetwork.public
