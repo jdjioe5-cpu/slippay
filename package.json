@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:tracking": "node scripts/check-clean-tracking.cjs",
     "lint": "pnpm -r lint",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
