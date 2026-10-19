@@ -31,6 +31,8 @@ jobs:
       run: pnpm -r lint
     - name: Workspace tests (shared, web, listener)
       run: pnpm -r test
+    - name: WooCommerce plugin PHP tests
+      run: php plugins/woocommerce-slippay/tests/run.php
     - name: Start local Supabase stack
       run: supabase start
     - name: API edge function tests (deno)

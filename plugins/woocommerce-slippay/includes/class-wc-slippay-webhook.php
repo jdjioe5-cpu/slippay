@@ -20,11 +20,10 @@ class WC_Slippay_Webhook {
     }
 
     public function handle() {
-        $raw = file_get_contents( 'php://input' );
+        $raw = $this->get_raw_input();
         if ( ! $raw ) {
-            status_header( 400 );
-            echo wp_json_encode( [ 'error' => 'empty body' ] );
-            exit;
+            $this->respond( 400, [ 'error' => 'empty body' ] );
+            return;
         }
 
         $gateway = $this->get_gateway();
@@ -33,39 +32,34 @@ class WC_Slippay_Webhook {
         // Webhook secret is mandatory. Empty config is treated as misconfiguration,
         // not as "skip verification" — closing the auth-bypass vector from audit-001.
         if ( strlen( $secret ) < 32 ) {
-            status_header( 503 );
-            echo wp_json_encode( [ 'error' => 'webhook_not_configured' ] );
-            exit;
+            $this->respond( 503, [ 'error' => 'webhook_not_configured' ] );
+            return;
         }
 
         $sig = $this->get_signature_header();
         if ( empty( $sig ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'missing signature header' ] );
-            exit;
+            $this->respond( 401, [ 'error' => 'missing signature header' ] );
+            return;
         }
 
         // Listener emits "t=<unix>,v1=<hex>" over HMAC-SHA256(secret, "<t>.<body>").
         // Reference: apps/listener/src/crypto.ts:3-13.
         if ( ! preg_match( '/^t=(\d+),v1=([a-f0-9]{64})$/', $sig, $m ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'malformed signature' ] );
-            exit;
+            $this->respond( 401, [ 'error' => 'malformed signature' ] );
+            return;
         }
         $t  = (int) $m[1];
         $v1 = $m[2];
 
         if ( abs( time() - $t ) > 300 ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'stale signature' ] );
-            exit;
+            $this->respond( 401, [ 'error' => 'stale signature' ] );
+            return;
         }
 
         $expected = hash_hmac( 'sha256', $t . '.' . $raw, $secret );
         if ( ! hash_equals( $expected, $v1 ) ) {
-            status_header( 401 );
-            echo wp_json_encode( [ 'error' => 'invalid signature' ] );
-            exit;
+            $this->respond( 401, [ 'error' => 'invalid signature' ] );
+            return;
         }
 
         // Replay protection. Listener sends a per-delivery uuid in x-slippay-delivery-id
@@ -76,29 +70,26 @@ class WC_Slippay_Webhook {
         if ( $delivery_id !== '' ) {
             $seen_key = 'slippay_seen_' . md5( $delivery_id );
             if ( get_transient( $seen_key ) ) {
-                status_header( 409 );
-                echo wp_json_encode( [ 'error' => 'duplicate delivery' ] );
-                exit;
+                $this->respond( 409, [ 'error' => 'duplicate delivery' ] );
+                return;
             }
             set_transient( $seen_key, 1, DAY_IN_SECONDS );
         }
 
         $payload = json_decode( $raw, true );
         if ( ! is_array( $payload ) || empty( $payload['type'] ) || empty( $payload['data']['id'] ) ) {
-            status_header( 400 );
-            echo wp_json_encode( [ 'error' => 'malformed payload' ] );
-            exit;
+            $this->respond( 400, [ 'error' => 'malformed payload' ] );
+            return;
         }
 
         $slippay_order_id = sanitize_text_field( $payload['data']['id'] );
-        $type             = sanitize_key( $payload['type'] );
+        $type             = preg_replace( '/[^a-z0-9_.\-]/', '', strtolower( (string) $payload['type'] ) );
         $tx_hash          = isset( $payload['data']['tx_hash'] ) ? sanitize_text_field( $payload['data']['tx_hash'] ) : '';
 
         $wc_order = $this->find_order_by_slippay_id( $slippay_order_id );
         if ( ! $wc_order ) {
-            status_header( 404 );
-            echo wp_json_encode( [ 'error' => 'wc order not found', 'slippay_id' => $slippay_order_id ] );
-            exit;
+            $this->respond( 404, [ 'error' => 'wc order not found', 'slippay_id' => $slippay_order_id ] );
+            return;
         }
 
         // Audit-006 W3: every value interpolated into add_order_note /
@@ -143,9 +134,19 @@ class WC_Slippay_Webhook {
         }
 
         $wc_order->save();
-        status_header( 200 );
-        echo wp_json_encode( [ 'ok' => true ] );
-        exit;
+        $this->respond( 200, [ 'ok' => true ] );
+    }
+
+    protected function get_raw_input() {
+        return apply_filters( 'wc_slippay_webhook_raw_input', file_get_contents( 'php://input' ) );
+    }
+
+    protected function respond( $code, $data ) {
+        status_header( $code );
+        echo wp_json_encode( $data );
+        if ( ! defined( 'WC_SLIPPAY_TESTING' ) ) {
+            exit;
+        }
     }
 
     private function get_signature_header() {
