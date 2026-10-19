@@ -6,6 +6,9 @@ import {
   LimitQuerySchema,
   ORDER_DEFAULT_EXPIRY_MINUTES,
   DEFAULT_PLATFORM_FEE_BP,
+  calculateFeeSplitStellar,
+  convertBrlToUsdcStellar,
+  formatRate,
 } from "@slippay/shared";
 import { requireApiKey } from "../middleware/auth_apikey.ts";
 import { requireApiKeyOrJwt } from "../middleware/auth_any.ts";
@@ -152,14 +155,16 @@ r.post("/:id/charge", requireApiKey, async (c) => {
   }
 
   const rate = await getBrlPerUsdc();
-  const usdc = (parseFloat(sub.brl_amount) / rate).toFixed(7);
+  const rateStr = formatRate(rate);
+  const usdc = convertBrlToUsdcStellar(sub.brl_amount, rateStr);
   const memo = await generateMemo();
   const expiresAt = new Date(Date.now() + ORDER_DEFAULT_EXPIRY_MINUTES * 60_000).toISOString();
   const nextChargeAt = new Date(Date.now() + sub.period_seconds * 1000).toISOString();
 
+  // Platform fee: calculate floored fee via canonical stroop arithmetic matching
+  // contracts/checkout/src/lib.rs (amount * fee_bps / 10_000) and order route.
   const feeBp = Number((merchant as { platform_fee_bp?: number }).platform_fee_bp ?? DEFAULT_PLATFORM_FEE_BP);
-  const grossUsdc = parseFloat(usdc);
-  const feeUsdc = (grossUsdc * feeBp / 10_000).toFixed(7);
+  const { feeStellar: feeUsdc } = calculateFeeSplitStellar(usdc, feeBp);
 
   const { data: order, error: orderErr } = await sb.from("orders").insert({
     merchant_id: merchant.id,
@@ -169,7 +174,7 @@ r.post("/:id/charge", requireApiKey, async (c) => {
     external_ref: sub.external_ref,
     brl_amount: sub.brl_amount,
     usdc_amount: usdc,
-    rate_brl_usdc: rate.toFixed(7),
+    rate_brl_usdc: rateStr,
     memo,
     expires_at: expiresAt,
     platform_fee_bp: feeBp,
