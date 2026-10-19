@@ -30,6 +30,70 @@ const SOROBAN_CONTRACT_DEFAULT =
     ? (Deno.env.get("SLIPPAY_SUBSCRIPTION_CONTRACT_MAINNET") ?? null)
     : (Deno.env.get("SLIPPAY_SUBSCRIPTION_CONTRACT_TESTNET") ?? null);
 
+export type ChargeableOutcome =
+  | { ok: true }
+  | { ok: false; error: "not_active"; status: 409; body: { error: "not_active"; status: string } }
+  | { ok: false; error: "expired"; status: 409; body: { error: "expired" }; markExpired: true }
+  | { ok: false; error: "max_periods_reached"; status: 409; body: { error: "max_periods_reached" }; markExpired: true };
+
+/**
+ * Pure evaluation of charge preconditions across all charge mechanisms.
+ */
+export function checkChargeable(
+  sub: {
+    status: string;
+    expires_at?: string | null;
+    max_periods?: number | null;
+    charges_done?: number | null;
+  },
+  now: Date = new Date()
+): ChargeableOutcome {
+  if (sub.status !== "active") {
+    return { ok: false, error: "not_active", status: 409, body: { error: "not_active", status: sub.status } };
+  }
+  if (sub.expires_at && new Date(sub.expires_at) < now) {
+    return { ok: false, error: "expired", status: 409, body: { error: "expired" }, markExpired: true };
+  }
+  if (sub.max_periods !== null && sub.max_periods !== undefined && (sub.charges_done ?? 0) >= sub.max_periods) {
+    return { ok: false, error: "max_periods_reached", status: 409, body: { error: "max_periods_reached" }, markExpired: true };
+  }
+  return { ok: true };
+}
+
+/**
+ * Shared precondition assertion for charging subscriptions.
+ * Enforces identical guards and writes status = 'expired' on terminal conditions across
+ * both off-chain (/charge) and on-chain (/onchain-charge) endpoints.
+ */
+export async function assertChargeable(
+  sb: SupabaseClient,
+  sub: {
+    id: string;
+    status: string;
+    expires_at?: string | null;
+    max_periods?: number | null;
+    charges_done?: number | null;
+  },
+  now: Date = new Date()
+): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      error: "not_active" | "expired" | "max_periods_reached";
+      status: 409;
+      body: { error: "not_active"; status: string } | { error: "expired" } | { error: "max_periods_reached" };
+    }
+> {
+  const result = checkChargeable(sub, now);
+  if (!result.ok) {
+    if ("markExpired" in result && result.markExpired) {
+      await sb.from("subscriptions").update({ status: "expired" }).eq("id", sub.id);
+    }
+    return { ok: false, error: result.error, status: result.status, body: result.body };
+  }
+  return { ok: true };
+}
+
 // POST /v1/subscriptions — create a subscription
 r.post("/", requireApiKey, async (c) => {
   const merchant = c.get("merchant");
@@ -124,16 +188,10 @@ r.post("/:id/charge", requireApiKey, async (c) => {
   const { data: sub, error: fetchErr } = await sb.from("subscriptions")
     .select("*").eq("id", id).eq("merchant_id", merchant.id).maybeSingle();
   if (fetchErr || !sub) return c.json({ error: "not_found" }, 404);
-  if (sub.status !== "active") {
-    return c.json({ error: "not_active", status: sub.status }, 409);
-  }
-  if (sub.expires_at && new Date(sub.expires_at) < new Date()) {
-    await sb.from("subscriptions").update({ status: "expired" }).eq("id", id);
-    return c.json({ error: "expired" }, 409);
-  }
-  if (sub.max_periods && sub.charges_done >= sub.max_periods) {
-    await sb.from("subscriptions").update({ status: "expired" }).eq("id", id);
-    return c.json({ error: "max_periods_reached" }, 409);
+
+  const guard = await assertChargeable(sb, sub);
+  if (!guard.ok) {
+    return c.json(guard.body, guard.status);
   }
 
   // Idempotency on time: don't create a new order if the previous one is still
@@ -220,18 +278,20 @@ r.post("/:id/onchain-charge", requireApiKey, async (c) => {
   const sb = c.get("supabase");
   const id = c.req.param("id");
 
+  const { data: sub, error: fetchErr } = await sb.from("subscriptions")
+    .select("*").eq("id", id).eq("merchant_id", merchant.id).maybeSingle();
+  if (fetchErr || !sub) return c.json({ error: "not_found" }, 404);
+
+  const guard = await assertChargeable(sb, sub);
+  if (!guard.ok) {
+    return c.json(guard.body, guard.status);
+  }
+
   let body: { buyer_address?: string } = {};
   try { body = await c.req.json(); } catch { /* empty body OK */ }
   const buyer = body.buyer_address ?? null;
   if (!buyer || buyer.length !== 56 || !buyer.startsWith("G")) {
     return c.json({ error: "invalid_buyer_address", detail: "expected 56-char Stellar pubkey" }, 400);
-  }
-
-  const { data: sub, error: fetchErr } = await sb.from("subscriptions")
-    .select("*").eq("id", id).eq("merchant_id", merchant.id).maybeSingle();
-  if (fetchErr || !sub) return c.json({ error: "not_found" }, 404);
-  if (sub.status !== "active") {
-    return c.json({ error: "not_active", status: sub.status }, 409);
   }
 
   const contractId = sub.soroban_contract_id ?? SOROBAN_CONTRACT_DEFAULT;
