@@ -43,19 +43,29 @@ export async function hashApiKey(plain: string): Promise<string> {
 }
 
 /** Legacy unsalted SHA-256, kept for read-side compat during rotation only. */
-async function legacyHashApiKey(plain: string): Promise<string> {
+export async function legacyHashApiKey(plain: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", ENC.encode(plain));
   return bufToHex(buf);
 }
 
-export async function verifyApiKey(plain: string, hash: string): Promise<boolean> {
-  // Try the peppered hash first.
+/**
+ * Returns candidate hashes for plain key lookup/verification.
+ * Order: [canonical peppered HMAC, legacy unsalted SHA-256].
+ * To drop the legacy compatibility path once rotation is complete,
+ * edit only this function to remove legacyHashApiKey.
+ */
+export async function hashCandidates(plain: string): Promise<string[]> {
   const peppered = await hashApiKey(plain);
-  if (constantTimeEqual(peppered, hash)) return true;
-  // Fall back to legacy SHA-256 so existing keys still authenticate until
-  // the merchant rotates. Remove this branch once rotation is complete.
   const legacy = await legacyHashApiKey(plain);
-  return constantTimeEqual(legacy, hash);
+  return [peppered, legacy];
+}
+
+export async function verifyApiKey(plain: string, hash: string): Promise<boolean> {
+  const candidates = await hashCandidates(plain);
+  for (const cand of candidates) {
+    if (constantTimeEqual(cand, hash)) return true;
+  }
+  return false;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
