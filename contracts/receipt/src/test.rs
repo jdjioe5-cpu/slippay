@@ -13,7 +13,7 @@
 #![cfg(test)]
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, BytesN as _, Events, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, BytesN as _, Events, Ledger as _, MockAuth, MockAuthInvoke},
     vec, Address, Bytes, BytesN, Env, IntoVal, Symbol,
 };
 
@@ -352,4 +352,50 @@ fn off_chain_verification_and_selective_disclosure() {
     // A wrong amount must NOT open the commitment → binding holds.
     let wrong = ref_commitment(&env, amount + 1, &blinding, &mandate_id, period_index);
     assert_ne!(wrong, commitment, "a different amount cannot open the same commitment");
+}
+
+#[test]
+fn read_operations_extend_mandate_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[111u8; 32]);
+    let recorder = Address::generate(&env);
+    c.open_mandate(&mandate_id, &recorder);
+
+    // Initial read works
+    let mandate = c.get_mandate(&mandate_id);
+    assert_eq!(mandate.count, 0);
+
+    // Record one receipt
+    let commitment = BytesN::from_array(&env, &[222u8; 32]);
+    let head = c.record(&mandate_id, &0, &commitment);
+    assert_eq!(c.get_head(&mandate_id), head);
+
+    // Advance ledger sequence past TTL_THRESHOLD_LEDGERS
+    env.ledger().with_mut(|li| {
+        li.sequence_number += TTL_THRESHOLD_LEDGERS + 500;
+    });
+
+    // Calling read operations (get_head, get_count, get_mandate) extends the TTL
+    // and keeps the mandate readable even across extended ledger periods
+    let head_read = c.get_head(&mandate_id);
+    assert_eq!(head_read, head);
+
+    let count_read = c.get_count(&mandate_id);
+    assert_eq!(count_read, 1);
+
+    let mandate_read = c.get_mandate(&mandate_id);
+    assert_eq!(mandate_read.count, 1);
+    assert_eq!(mandate_read.head, head);
+
+    // Advance ledger sequence again past another threshold
+    env.ledger().with_mut(|li| {
+        li.sequence_number += TTL_THRESHOLD_LEDGERS + 500;
+    });
+
+    // Still readable without panicking because get_mandate refreshed the TTL lease
+    let final_head = c.get_head(&mandate_id);
+    assert_eq!(final_head, head);
 }

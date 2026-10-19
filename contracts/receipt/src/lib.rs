@@ -61,8 +61,8 @@ use soroban_sdk::{
 
 // Mirror of slippay-subscription audit-002 F1 TTL constants. The host clamps
 // to its protocol maximum so passing a generous target is safe.
-const TTL_THRESHOLD_LEDGERS: u32 = 17_280; // ~1 day at 5s/ledger
-const TTL_TARGET_LEDGERS: u32 = 535_000; // ~31 days at 5s/ledger (clamped)
+pub const TTL_THRESHOLD_LEDGERS: u32 = 17_280; // ~1 day at 5s/ledger
+pub const TTL_TARGET_LEDGERS: u32 = 535_000; // ~31 days at 5s/ledger (clamped)
 
 /// A recurring-charge mandate: an append-only, gap-free receipt chain keyed by
 /// `mandate_id`. `head` is the running chain tip (32 zero bytes before the
@@ -202,10 +202,19 @@ impl Receipt {
 
 impl Receipt {
     fn load(env: &Env, mandate_id: &BytesN<32>) -> Mandate {
+        let key = DataKey::Mandate(mandate_id.clone());
+        let mandate: Mandate = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotFound));
+
+        // Extend persistent TTL on read so actively audited chains never archive between billing periods.
         env.storage()
             .persistent()
-            .get(&DataKey::Mandate(mandate_id.clone()))
-            .unwrap_or_else(|| panic_with_error!(env, Error::NotFound))
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_TARGET_LEDGERS);
+
+        mandate
     }
 }
 
