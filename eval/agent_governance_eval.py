@@ -282,5 +282,83 @@ def run():
     return win
 
 
+def evaluate_corpus():
+    """Computes deterministic confusion metrics across the corpus.
+
+    Returns a structured summary dict with TPR/FPR rates for automated asserting.
+    """
+    detectors = {"cap_only": cap_only, "cap_plus_drift": cap_plus_drift}
+    results = {name: {"tp": 0, "fn": 0, "fp": 0, "tn": 0, "res_tp": 0, "res_fn": 0}
+               for name in detectors}
+    for sc in CORPUS:
+        history = sc.spends[:-1]
+        judged = sc.spends[-1]
+        for name, det in detectors.items():
+            blocked = det(sc.session, history, judged)
+            r = results[name]
+            if sc.label_block:
+                if blocked: r["tp"] += 1
+                else:       r["fn"] += 1
+                if sc.klass == "residual":
+                    if blocked: r["res_tp"] += 1
+                    else:       r["res_fn"] += 1
+            else:
+                if blocked: r["fp"] += 1
+                else:       r["tn"] += 1
+
+    def rate(a, b): return round(a / (a + b), 2) if (a + b) else 0.0
+    summary = {
+        "cases": len(CORPUS),
+        "cap_only": {
+            "tpr_all": rate(results["cap_only"]["tp"], results["cap_only"]["fn"]),
+            "fpr": rate(results["cap_only"]["fp"], results["cap_only"]["tn"]),
+            "tpr_residual": rate(results["cap_only"]["res_tp"], results["cap_only"]["res_fn"]),
+        },
+        "cap_plus_drift": {
+            "tpr_all": rate(results["cap_plus_drift"]["tp"], results["cap_plus_drift"]["fn"]),
+            "fpr": rate(results["cap_plus_drift"]["fp"], results["cap_plus_drift"]["tn"]),
+            "tpr_residual": rate(results["cap_plus_drift"]["res_tp"], results["cap_plus_drift"]["res_fn"]),
+        },
+    }
+    cd_res = summary["cap_plus_drift"]["tpr_residual"]
+    cd_fpr = summary["cap_plus_drift"]["fpr"]
+    co_res = summary["cap_only"]["tpr_residual"]
+    summary["win"] = (cd_res >= 0.90 and cd_fpr <= 0.05 and cd_res > co_res)
+    return summary
+
+
+EXPECTED_RATES = {
+    "cases": 11,
+    "cap_only": {
+        "tpr_all": 0.50,
+        "fpr": 0.00,
+        "tpr_residual": 0.00,
+    },
+    "cap_plus_drift": {
+        "tpr_all": 1.00,
+        "fpr": 0.00,
+        "tpr_residual": 1.00,
+    },
+    "win": True,
+}
+
+
 if __name__ == "__main__":
-    run()
+    import sys
+    import json
+
+    if "--emit-expected" in sys.argv:
+        print(json.dumps(evaluate_corpus(), indent=2, sort_keys=True))
+        sys.exit(0)
+
+    if "--assert" in sys.argv:
+        got = evaluate_corpus()
+        if got != EXPECTED_RATES:
+            print(f"ASSERTION FAILED:\nExpected: {EXPECTED_RATES}\nGot: {got}", file=sys.stderr)
+            sys.exit(1)
+        print("OK: Governance evaluation metrics match committed expectation.")
+        sys.exit(0)
+
+    success = run()
+    sys.exit(0 if success else 1)
+

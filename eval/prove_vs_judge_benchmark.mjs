@@ -33,28 +33,43 @@ const BATTERY = [
   { p: "d.to in a.allow", ctx: { d: { to: "ga_primary" }, a: { allow: ALLOW } }, exp: false },       // case
 ];
 
-function run() {
+export function evaluateBattery() {
   let correct = 0;
   const wrong = [];
+  const results = [];
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < BATTERY.length; i++) {
     const c = BATTERY[i];
     const got = compilePredicate(c.p).eval(c.ctx);
+    results.push({ i, p: c.p, got, exp: c.exp, ok: got === c.exp });
     if (got === c.exp) correct++;
     else wrong.push({ i, p: c.p, got, exp: c.exp });
   }
   const t1 = process.hrtime.bigint();
   const us = Number(t1 - t0) / 1000;
+  return {
+    cases: BATTERY.length,
+    correct,
+    wrong,
+    results,
+    wallTimeUs: us,
+    usPerCase: us / BATTERY.length,
+  };
+}
+
+export function run() {
+  const summary = evaluateBattery();
   console.log("=== prove-as-code (deterministic) ===");
-  console.log(`cases:        ${BATTERY.length}`);
-  console.log(`correct:      ${correct}/${BATTERY.length}`);
-  console.log(`wrong:        ${JSON.stringify(wrong)}`);
+  console.log(`cases:        ${summary.cases}`);
+  console.log(`correct:      ${summary.correct}/${summary.cases}`);
+  console.log(`wrong:        ${JSON.stringify(summary.wrong)}`);
   console.log(`LLM tokens:   0  (no model invocation anywhere)`);
-  console.log(`wall time:    ${us.toFixed(0)} µs total · ${(us / BATTERY.length).toFixed(1)} µs/case`);
+  console.log(`wall time:    ${summary.wallTimeUs.toFixed(0)} µs total · ${summary.usPerCase.toFixed(1)} µs/case`);
   console.log("\nLLM-judge side: not bundled (needs an API call). Send JUDGE_PROMPT +");
-  console.log("the battery to any model, score vs `exp`. Recorded run (w10t6ixln): 40/40,");
-  console.log("~thousands tokens, ~seconds — one run, not reproducible from this file.");
-  if (wrong.length) process.exit(1);
+  console.log("the battery to any model, score vs `exp`. Historical recorded run (workflow w10t6ixln): 40/40,");
+  console.log("~thousands tokens, ~seconds — single dated run, not reproducible from this file.");
+  if (summary.wrong.length) process.exit(1);
+  return summary;
 }
 
 export const JUDGE_PROMPT =
@@ -62,4 +77,20 @@ export const JUDGE_PROMPT =
   "for the given context. Answer true/false per case. Evaluate as an LLM would in " +
   "a verifier loop (no code execution).";
 
-run();
+export { BATTERY };
+
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+
+// Run automatically when invoked directly as a script
+if (process.argv[1]) {
+  try {
+    const scriptPath = resolve(process.argv[1]);
+    const modulePath = fileURLToPath(import.meta.url);
+    if (scriptPath.toLowerCase() === modulePath.toLowerCase()) {
+      run();
+    }
+  } catch {
+    // If path resolution fails, do not block importing
+  }
+}

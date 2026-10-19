@@ -14,7 +14,12 @@
     "supabase:stop": "supabase stop",
     "supabase:reset": "supabase db reset",
     "api:test": "deno test --allow-all supabase/functions/api/test/",
-    "policy-checkout:spike": "NODE_PATH=apps/web/node_modules node scripts/policy-checkout-spike-server.mjs"
+    "policy-checkout:spike": "NODE_PATH=apps/web/node_modules node scripts/policy-checkout-spike-server.mjs",
+    "eval:prove": "node eval/prove_vs_judge_benchmark.mjs",
+    "eval:prove:test": "node --test eval/prove_vs_judge_benchmark.test.mjs",
+    "eval:governance": "python eval/agent_governance_eval.py",
+    "eval:governance:test": "python -m unittest eval/test_agent_governance_eval.py",
+    "eval:test": "node --test eval/prove_vs_judge_benchmark.test.mjs && python eval/agent_governance_eval.py --assert && python -m unittest eval/test_agent_governance_eval.py"
   },
   "devDependencies": {
     "eslint-plugin-jsx-a11y": "^6.10.0",

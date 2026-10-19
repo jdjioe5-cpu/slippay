@@ -1,0 +1,17 @@
+{
+  "benchmark": "prove_vs_judge_benchmark",
+  "deterministic": true,
+  "cases": 11,
+  "expected_correct": 11,
+  "expected_wrong": 0,
+  "accuracy": 1.0,
+  "llm_tokens": 0,
+  "historical_llm_judge_run": {
+    "workflow": "w10t6ixln",
+    "cases": 40,
+    "correct": 40,
+    "accuracy": 1.0,
+    "reproducible_offline": false,
+    "note": "Single recorded run with model call, not bundled for offline reproduction."
+  }
+}

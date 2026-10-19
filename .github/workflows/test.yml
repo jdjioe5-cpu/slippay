@@ -31,6 +31,11 @@ jobs:
       run: pnpm -r lint
     - name: Workspace tests (shared, web, listener)
       run: pnpm -r test
+    - name: Run evaluation harnesses (deterministic prove benchmark & governance eval)
+      run: |
+        node --test eval/prove_vs_judge_benchmark.test.mjs
+        python3 eval/agent_governance_eval.py --assert
+        python3 -m unittest eval/test_agent_governance_eval.py
     - name: Start local Supabase stack
       run: supabase start
     - name: API edge function tests (deno)

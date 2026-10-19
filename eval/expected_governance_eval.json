@@ -1,0 +1,20 @@
+{
+  "benchmark": "agent_governance_eval",
+  "deterministic": true,
+  "cases": 11,
+  "cap_only": {
+    "fpr": 0.0,
+    "tpr_all": 0.5,
+    "tpr_residual": 0.0
+  },
+  "cap_plus_drift": {
+    "fpr": 0.0,
+    "tpr_all": 1.0,
+    "tpr_residual": 1.0
+  },
+  "win": true,
+  "kill_condition_thresholds": {
+    "min_tpr_residual": 0.9,
+    "max_fpr": 0.05
+  }
+}
