@@ -17,6 +17,7 @@
 //   CHARGE=1 CONFIRM_MAINNET=1 \
 //   NODE_PATH=apps/web/node_modules node scripts/autocharge-scheduler.mjs
 
+import { fileURLToPath } from "node:url";
 import * as S from "../apps/web/node_modules/@stellar/stellar-sdk/lib/index.js";
 const { rpc, Keypair, Networks, TransactionBuilder, Contract, nativeToScVal, xdr, BASE_FEE } = S;
 
@@ -24,8 +25,48 @@ const NET = (process.env.STELLAR_NETWORK || "testnet").toLowerCase();
 const IS_MAINNET = NET === "mainnet" || NET === "public";
 const PASSPHRASE = IS_MAINNET ? Networks.PUBLIC : Networks.TESTNET;
 const RPC_URL = process.env.RPC || (IS_MAINNET ? "https://soroban-mainnet.stellar.org" : "https://soroban-testnet.stellar.org");
-// v0.4 contract (autocharge + attestation gate + 2.97% platform fee), mainnet, deployed 2026-06-05.
-const DEFAULT_CONTRACT = process.env.CONTRACT || "CD2RFNOLMIKZN4EETDCGULGMD4ANS56IIUDIBLOE24P4JRZM2GCVFV2U";
+
+export const MAINNET_DEFAULT_CONTRACT =
+  process.env.SLIPPAY_SUBSCRIPTION_CONTRACT_MAINNET ||
+  "CD2RFNOLMIKZN4EETDCGULGMD4ANS56IIUDIBLOE24P4JRZM2GCVFV2U";
+
+export function resolveDefaultContract(network = process.env.STELLAR_NETWORK, envContract = process.env.CONTRACT) {
+  if (envContract && envContract.trim()) {
+    return envContract.trim();
+  }
+  const net = (network || "testnet").toLowerCase();
+  const isMainnet = net === "mainnet" || net === "public";
+  if (isMainnet) {
+    return MAINNET_DEFAULT_CONTRACT;
+  }
+  return process.env.SLIPPAY_SUBSCRIPTION_CONTRACT_TESTNET || process.env.CONTRACT_TESTNET || null;
+}
+
+export function isValidContractId(id) {
+  return typeof id === "string" && /^C[A-Z2-7]{55}$/.test(id);
+}
+
+export function resolveSubscriptionContract(sub, network = NET, defaultContract = null) {
+  const directId = sub?.soroban_contract_id?.trim();
+  const resolved = directId || defaultContract;
+  if (!resolved) {
+    return {
+      ok: false,
+      error: "missing_contract",
+      reason: `no contract configured for network ${network} (set CONTRACT or SLIPPAY_SUBSCRIPTION_CONTRACT_TESTNET)`,
+    };
+  }
+  if (!isValidContractId(resolved)) {
+    return {
+      ok: false,
+      error: "invalid_contract_id",
+      reason: `"${resolved}" is not a valid 56-character C... StrKey`,
+    };
+  }
+  return { ok: true, contractId: resolved };
+}
+
+const DEFAULT_CONTRACT = resolveDefaultContract(NET);
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RELAYER_SECRET = process.env.RELAYER_SECRET;
@@ -88,7 +129,13 @@ async function main() {
 
   let ok = 0, fail = 0;
   for (const s of due) {
-    const contractId = s.soroban_contract_id || DEFAULT_CONTRACT;
+    const res = resolveSubscriptionContract(s, NET, DEFAULT_CONTRACT);
+    if (!res.ok) {
+      fail++;
+      log(`✗ sub ${s.id} → ${res.error}: ${res.reason}`);
+      continue;
+    }
+    const contractId = res.contractId;
     try {
       const r = await autocharge(relayer, contractId, s.soroban_subscription_id);
       if (r.status === "SUCCESS") { ok++; log(`✓ sub ${s.id} → ${EXPLORER}${r.hash}`); }
@@ -100,4 +147,8 @@ async function main() {
   log(`\ndone: ${ok} charged, ${fail} failed.`);
 }
 
-main().catch(e => { console.error("FAILED:", e?.message ?? e); process.exit(1); });
+export { main };
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch(e => { console.error("FAILED:", e?.message ?? e); process.exit(1); });
+}
