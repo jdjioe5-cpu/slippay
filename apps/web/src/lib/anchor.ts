@@ -1,13 +1,22 @@
-// SEP-10 + SEP-24 client against the Stellar reference testanchor.
-// Scope: minimum viable flow for hackathon demo · no production hardening.
+// SEP-10 + SEP-24 client against Stellar anchors (testanchor or production).
+// Scope: minimum viable flow for hackathon demo and partner integrations.
+//
+// Network & Anchor configuration:
+//   - TESTNET (default):
+//       VITE_STELLAR_NETWORK=TESTNET (or unset)
+//       VITE_ANCHOR_HOME=https://testanchor.stellar.org (or unset)
+//       VITE_ANCHOR_ASSET_CODE=SRT (or testnet USDC)
+//   - PUBLIC / MAINNET:
+//       Both network and anchor home must be configured together:
+//       VITE_STELLAR_NETWORK=PUBLIC
+//       VITE_ANCHOR_HOME=https://<partner-anchor>
+//       VITE_ANCHOR_ASSET_CODE=USDC
+//       VITE_ANCHOR_ISSUER=<mainnet-usdc-issuer>
 //
 // Flow:
 //   1. SEP-10 web auth (GET challenge, sign, POST, receive JWT)
 //   2. SEP-24 deposit interactive (POST, open popup, poll transaction)
-//   3. Surface USDC arrival on the buyer wallet via Horizon
-//
-// Anchor: https://testanchor.stellar.org/.well-known/stellar.toml
-// Network: TESTNET (passphrase "Test SDF Network ; September 2015")
+//   3. Surface asset arrival on the buyer wallet via Horizon
 
 import {
   Keypair,
@@ -19,23 +28,64 @@ import {
   Horizon,
 } from "@stellar/stellar-sdk";
 
-// Anchor is config-driven so the SAME SEP-10 + SEP-24 on-ramp flow can point at
-// any Stellar anchor — testanchor today, MoneyGram Ramps once partner-approved.
-// MoneyGram swap = set these envs (VITE_ANCHOR_HOME=https://<moneygram-anchor>,
-// VITE_ANCHOR_ASSET_CODE=USDC, VITE_ANCHOR_ISSUER=GA5ZSEJY...), no code change.
+export interface AnchorConfig {
+  network: "TESTNET" | "PUBLIC";
+  networkPassphrase: string;
+  horizonUrl: string;
+  anchorHome: string;
+  isTestnet: boolean;
+  assetCode: string;
+  assetIssuer: string;
+}
+
+export function resolveAnchorConfig(env: Record<string, string | undefined> = import.meta.env as Record<string, string | undefined>): AnchorConfig {
+  const rawNetwork = (env.VITE_STELLAR_NETWORK ?? "TESTNET").trim().toUpperCase();
+  const isPublic = rawNetwork === "PUBLIC" || rawNetwork === "MAINNET";
+  const network: "TESTNET" | "PUBLIC" = isPublic ? "PUBLIC" : "TESTNET";
+  const networkPassphrase = isPublic ? Networks.PUBLIC : Networks.TESTNET;
+  const horizonUrl = env.VITE_STELLAR_HORIZON_URL ?? (isPublic ? "https://horizon.stellar.org" : "https://horizon-testnet.stellar.org");
+  const anchorHome = env.VITE_ANCHOR_HOME ?? (isPublic ? "https://anchor.stellar.org" : "https://testanchor.stellar.org");
+
+  // Fail fast on inconsistent anchor home and network
+  validateNetworkConsistency(anchorHome, network);
+
+  const srtIssuer = "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6B";
+  const assetCode = env.VITE_ANCHOR_ASSET_CODE ?? (isPublic ? "USDC" : "SRT");
+  const assetIssuer = env.VITE_ANCHOR_ISSUER ?? (isPublic ? "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" : srtIssuer);
+
+  return {
+    network,
+    networkPassphrase,
+    horizonUrl,
+    anchorHome,
+    isTestnet: !isPublic,
+    assetCode,
+    assetIssuer,
+  };
+}
+
+export function validateNetworkConsistency(anchorHome: string, network: "TESTNET" | "PUBLIC"): void {
+  if (network === "PUBLIC" && anchorHome.includes("testanchor.stellar.org")) {
+    throw new Error(
+      `anchor.ts: network is configured as "${network}", but ANCHOR_HOME is pointing to testanchor ("${anchorHome}"). Production requires a mainnet anchor endpoint.`,
+    );
+  }
+}
+
 const env = import.meta.env as Record<string, string | undefined>;
-export const ANCHOR_HOME = env.VITE_ANCHOR_HOME ?? "https://testanchor.stellar.org";
+const initialConfig = resolveAnchorConfig(env);
+
+export const STELLAR_NETWORK = initialConfig.network;
+export const NETWORK_PASSPHRASE = initialConfig.networkPassphrase;
+export const HORIZON_URL = initialConfig.horizonUrl;
+export const HORIZON_TESTNET = HORIZON_URL; // backwards compatibility alias
+export const ANCHOR_HOME = initialConfig.anchorHome;
 export const ANCHOR_AUTH = `${ANCHOR_HOME}/auth`;
 export const ANCHOR_SEP24 = `${ANCHOR_HOME}/sep24`;
-export const HORIZON_TESTNET = "https://horizon-testnet.stellar.org";
-export const NETWORK_PASSPHRASE = Networks.TESTNET;
 
-// Default to SRT (testanchor's always-liquid reference token); the testanchor
-// USDC pool drains periodically. Override to USDC for MoneyGram via env.
-export const ANCHOR_SRT_ISSUER =
-  "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6B";
-export const ANCHOR_ASSET_CODE = env.VITE_ANCHOR_ASSET_CODE ?? "SRT";
-export const ANCHOR_ASSET_ISSUER = env.VITE_ANCHOR_ISSUER ?? ANCHOR_SRT_ISSUER;
+export const ANCHOR_SRT_ISSUER = "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6B";
+export const ANCHOR_ASSET_CODE = initialConfig.assetCode;
+export const ANCHOR_ASSET_ISSUER = initialConfig.assetIssuer;
 export const ANCHOR_ASSET = new Asset(ANCHOR_ASSET_CODE, ANCHOR_ASSET_ISSUER);
 
 export interface BuyerWallet {
@@ -51,11 +101,10 @@ const STORAGE_KEY = "slippay.anchor.buyer.v1";
 // via src/lib/wallet.ts) and never touch localStorage. We assert the app is on
 // testnet (same env the rest of the app reads — see wallet.ts:8) before writing.
 function assertTestnetForLocalSecret(): void {
-  const network = (import.meta.env.VITE_STELLAR_NETWORK ?? "TESTNET").toUpperCase();
-  if (network !== "TESTNET") {
+  if (STELLAR_NETWORK !== "TESTNET") {
     throw new Error(
       "anchor.ts: refusing to persist a Stellar secret to localStorage on " +
-        `network "${network}". Real funds must use a passkey / external wallet, ` +
+        `network "${STELLAR_NETWORK}". Real funds must use a passkey / external wallet, ` +
         "not localStorage-stored secrets.",
     );
   }
@@ -83,8 +132,11 @@ export function resetBuyer(): BuyerWallet {
 }
 
 /** Fund a testnet account via friendbot. Idempotent — succeeds if already funded. */
-export async function fundIfNeeded(publicKey: string): Promise<"funded" | "already"> {
-  const horizon = new Horizon.Server(HORIZON_TESTNET);
+export async function fundIfNeeded(publicKey: string): Promise<"funded" | "already" | "skipped_mainnet"> {
+  if (STELLAR_NETWORK !== "TESTNET") {
+    return "skipped_mainnet";
+  }
+  const horizon = new Horizon.Server(HORIZON_URL);
   try {
     await horizon.loadAccount(publicKey);
     return "already";
@@ -97,7 +149,7 @@ export async function fundIfNeeded(publicKey: string): Promise<"funded" | "alrea
 
 /** Add the anchor's asset trustline so the anchor can pay this wallet. */
 export async function ensureUsdcTrustline(buyer: BuyerWallet): Promise<"added" | "exists"> {
-  const horizon = new Horizon.Server(HORIZON_TESTNET);
+  const horizon = new Horizon.Server(HORIZON_URL);
   const account = await horizon.loadAccount(buyer.publicKey);
   const has = account.balances.some((b: any) =>
     b.asset_code === ANCHOR_ASSET_CODE && b.asset_issuer === ANCHOR_ASSET_ISSUER,
@@ -123,7 +175,9 @@ export async function sep10Authenticate(buyer: BuyerWallet): Promise<string> {
   if (!challengeRes.ok) throw new Error(`SEP-10 challenge failed: ${challengeRes.status}`);
   const { transaction, network_passphrase } = await challengeRes.json();
   if (network_passphrase !== NETWORK_PASSPHRASE) {
-    throw new Error(`network passphrase mismatch: ${network_passphrase}`);
+    throw new Error(
+      `network mismatch: anchor declared network passphrase "${network_passphrase}", but client is configured for network "${STELLAR_NETWORK}" ("${NETWORK_PASSPHRASE}")`,
+    );
   }
   // 2. Sign challenge with buyer key
   const tx = TransactionBuilder.fromXDR(transaction, NETWORK_PASSPHRASE);
@@ -250,7 +304,7 @@ export async function sendWithdrawalPayment(
   }
   if (!tx.amount_in) throw new Error("amount_in missing on withdraw tx");
 
-  const horizon = new Horizon.Server(HORIZON_TESTNET);
+  const horizon = new Horizon.Server(HORIZON_URL);
   const account = await horizon.loadAccount(buyer.publicKey);
   const payment = new TransactionBuilder(account, {
     fee: "1000",
@@ -285,7 +339,7 @@ export interface BuyerBalance {
 }
 
 export async function getBuyerBalances(publicKey: string): Promise<BuyerBalance[]> {
-  const horizon = new Horizon.Server(HORIZON_TESTNET);
+  const horizon = new Horizon.Server(HORIZON_URL);
   try {
     const account = await horizon.loadAccount(publicKey);
     return account.balances.map((b: any) => ({
