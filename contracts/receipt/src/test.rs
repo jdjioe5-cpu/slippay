@@ -353,3 +353,197 @@ fn off_chain_verification_and_selective_disclosure() {
     let wrong = ref_commitment(&env, amount + 1, &blinding, &mandate_id, period_index);
     assert_ne!(wrong, commitment, "a different amount cannot open the same commitment");
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// 10. Issue #496: Terminal State (close_mandate), Transfer, and Overflow Guards
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn record_on_closed_mandate_rejects_with_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[91u8; 32]);
+    let recorder = Address::generate(&env);
+    c.open_mandate(&mandate_id, &recorder);
+
+    // Initial state: not closed
+    assert_eq!(c.is_closed(&mandate_id), false);
+    let m = c.get_mandate(&mandate_id);
+    assert_eq!(m.closed, false);
+
+    // Record period 0
+    let c0 = BytesN::random(&env);
+    c.record(&mandate_id, &0, &c0);
+
+    // Close mandate
+    c.close_mandate(&mandate_id);
+    assert_eq!(c.is_closed(&mandate_id), true);
+    let m_closed = c.get_mandate(&mandate_id);
+    assert_eq!(m_closed.closed, true);
+
+    // Subsequent record must fail with MandateClosed
+    let c1 = BytesN::random(&env);
+    let err = c.try_record(&mandate_id, &1, &c1);
+    assert_eq!(err.err().unwrap().unwrap(), Error::MandateClosed.into());
+
+    // Repeated close must also fail with MandateClosed
+    let close_again = c.try_close_mandate(&mandate_id);
+    assert_eq!(close_again.err().unwrap().unwrap(), Error::MandateClosed.into());
+}
+
+#[test]
+fn close_mandate_requires_recorder_auth() {
+    let env = Env::default();
+    let (id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[92u8; 32]);
+    let recorder = Address::generate(&env);
+
+    // Authorize open
+    env.mock_auths(&[MockAuth {
+        address: &recorder,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "open_mandate",
+            args: (&mandate_id, &recorder).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    c.open_mandate(&mandate_id, &recorder);
+
+    // Unauthorized close fails
+    let intruder = Address::generate(&env);
+    env.mock_auths(&[MockAuth {
+        address: &intruder,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "close_mandate",
+            args: (&mandate_id,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let err = c.try_close_mandate(&mandate_id);
+    assert!(err.is_err());
+
+    // Authorized close succeeds
+    env.mock_auths(&[MockAuth {
+        address: &recorder,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "close_mandate",
+            args: (&mandate_id,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    c.close_mandate(&mandate_id);
+    assert_eq!(c.is_closed(&mandate_id), true);
+}
+
+#[test]
+fn transfer_recorder_moves_auth_and_prevents_old_recorder() {
+    let env = Env::default();
+    let (id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[93u8; 32]);
+    let recorder_a = Address::generate(&env);
+    let recorder_b = Address::generate(&env);
+
+    // Open with recorder A
+    env.mock_auths(&[MockAuth {
+        address: &recorder_a,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "open_mandate",
+            args: (&mandate_id, &recorder_a).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    c.open_mandate(&mandate_id, &recorder_a);
+
+    // Transfer recorder from A to B (requires A's auth)
+    env.mock_auths(&[MockAuth {
+        address: &recorder_a,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "transfer_recorder",
+            args: (&mandate_id, &recorder_b).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    c.transfer_recorder(&mandate_id, &recorder_b);
+
+    // Mandate now reports recorder B
+    let m = c.get_mandate(&mandate_id);
+    assert_eq!(m.recorder, recorder_b);
+
+    // Recorder A can no longer record
+    let c0 = BytesN::random(&env);
+    env.mock_auths(&[MockAuth {
+        address: &recorder_a,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "record",
+            args: (&mandate_id, 0u32, &c0).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let err = c.try_record(&mandate_id, &0, &c0);
+    assert!(err.is_err(), "old recorder A must not be authorized to append");
+
+    // Recorder B can record
+    env.mock_auths(&[MockAuth {
+        address: &recorder_b,
+        invoke: &MockAuthInvoke {
+            contract: &id,
+            fn_name: "record",
+            args: (&mandate_id, 0u32, &c0).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let head = c.record(&mandate_id, &0, &c0);
+    assert_eq!(c.get_count(&mandate_id), 1);
+    assert_eq!(c.get_head(&mandate_id), head);
+}
+
+#[test]
+fn transfer_recorder_on_closed_mandate_rejects() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[94u8; 32]);
+    let recorder_a = Address::generate(&env);
+    let recorder_b = Address::generate(&env);
+
+    c.open_mandate(&mandate_id, &recorder_a);
+    c.close_mandate(&mandate_id);
+
+    let err = c.try_transfer_recorder(&mandate_id, &recorder_b);
+    assert_eq!(err.err().unwrap().unwrap(), Error::MandateClosed.into());
+}
+
+#[test]
+fn counter_checked_add_overflow_rejects() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (id, c) = deploy(&env);
+
+    let mandate_id = BytesN::from_array(&env, &[95u8; 32]);
+    let recorder = Address::generate(&env);
+    c.open_mandate(&mandate_id, &recorder);
+
+    // Manually set count to u32::MAX in persistent storage
+    env.as_contract(&id, || {
+        let key = DataKey::Mandate(mandate_id.clone());
+        let mut mandate: Mandate = env.storage().persistent().get(&key).unwrap();
+        mandate.count = u32::MAX;
+        env.storage().persistent().set(&key, &mandate);
+    });
+
+    let commitment = BytesN::random(&env);
+    let err = c.try_record(&mandate_id, &u32::MAX, &commitment);
+    assert_eq!(err.err().unwrap().unwrap(), Error::CountOverflow.into());
+}
+
