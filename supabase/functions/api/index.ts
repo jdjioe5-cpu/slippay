@@ -51,6 +51,78 @@ api.route("/v1/offramp", offramp);
 // 4P Finance ramp (on-ramp Pix->wallet; dormant until FOURP_API_KEY set).
 api.route("/v1/4p", fourp);
 
+export interface OptionalFeatureStatus {
+  feature: string;
+  enabled: boolean;
+  reason?: string;
+}
+
+export function getOptionalFeaturesStatus(): OptionalFeatureStatus[] {
+  const status: OptionalFeatureStatus[] = [];
+
+  // Relayer
+  const relayerSecret = Deno.env.get("RELAYER_SECRET");
+  const relayerWasm = Deno.env.get("RELAYER_WASM_HASH");
+  if (!relayerSecret) {
+    status.push({ feature: "relayer", enabled: false, reason: "RELAYER_SECRET not configured" });
+  } else if (!relayerWasm) {
+    status.push({ feature: "relayer", enabled: false, reason: "RELAYER_WASM_HASH not configured" });
+  } else {
+    status.push({ feature: "relayer", enabled: true });
+  }
+
+  // Etherfuse Ramp
+  const etherfuseKey = Deno.env.get("ETHERFUSE_API_KEY");
+  if (!etherfuseKey) {
+    status.push({ feature: "etherfuse_ramp", enabled: false, reason: "ETHERFUSE_API_KEY not configured" });
+  } else {
+    status.push({ feature: "etherfuse_ramp", enabled: true });
+  }
+
+  // 4P Ramp
+  const fourpKey = Deno.env.get("FOURP_API_KEY");
+  if (!fourpKey) {
+    status.push({ feature: "fourp_ramp", enabled: false, reason: "FOURP_API_KEY not configured" });
+  } else {
+    status.push({ feature: "fourp_ramp", enabled: true });
+  }
+
+  // Dune Metrics
+  const duneKey = Deno.env.get("DUNE_API_KEY");
+  if (!duneKey) {
+    status.push({ feature: "dune_metrics", enabled: false, reason: "DUNE_API_KEY not configured" });
+  } else {
+    status.push({ feature: "dune_metrics", enabled: true });
+  }
+
+  // Onchain Subscriptions
+  const subContractMainnet = Deno.env.get("SLIPPAY_SUBSCRIPTION_CONTRACT_MAINNET");
+  const subContractTestnet = Deno.env.get("SLIPPAY_SUBSCRIPTION_CONTRACT_TESTNET");
+  if (!subContractMainnet && !subContractTestnet) {
+    status.push({ feature: "onchain_subscriptions", enabled: false, reason: "SLIPPAY_SUBSCRIPTION_CONTRACT_MAINNET/TESTNET not configured" });
+  } else {
+    status.push({ feature: "onchain_subscriptions", enabled: true });
+  }
+
+  return status;
+}
+
+export function logOptionalFeaturesStatus(): void {
+  const statuses = getOptionalFeaturesStatus();
+  const disabled = statuses.filter((s) => !s.enabled);
+  if (disabled.length === 0) {
+    console.info("[api] All optional features are configured and enabled.");
+  } else {
+    console.warn(`[api] ${disabled.length} optional feature(s) disabled at startup:`);
+    for (const d of disabled) {
+      console.warn(`  - [DISABLED] ${d.feature}: ${d.reason}`);
+    }
+  }
+}
+
+// Operational diagnostics endpoint
+api.get("/v1/features", (c) => c.json({ features: getOptionalFeaturesStatus() }));
+
 const app = new Hono();
 app.route("/", api);
 
@@ -154,6 +226,7 @@ app.get("*", async (c) => {
 });
 
 if (import.meta.main) {
+  logOptionalFeaturesStatus();
   const port = Number(Deno.env.get("PORT") ?? 8000);
   Deno.serve({ port }, app.fetch);
 }

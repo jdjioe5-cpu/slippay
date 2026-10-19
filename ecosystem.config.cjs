@@ -28,28 +28,68 @@ function loadEnv(file) {
 const ROOT = __dirname;
 const env = loadEnv(path.join(ROOT, ".env"));
 
-const apiEnv = {
-  PORT: env.API_PORT || "8080",
-  CHECKOUT_TOKEN_SECRET: env.CHECKOUT_TOKEN_SECRET,
-  API_KEY_PEPPER: env.API_KEY_PEPPER,
-  ZOD_VERBOSE: env.ZOD_VERBOSE || "",
-  SUPABASE_URL: env.SUPABASE_URL,
-  SUPABASE_ANON_KEY: env.SUPABASE_ANON_KEY,
-  SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
-  SLIPPAY_DB_SCHEMA,
-      STELLAR_NETWORK: env.STELLAR_NETWORK: env.SLIPPAY_DB_SCHEMA || "public",
-  CHECKOUT_BASE_URL: env.CHECKOUT_BASE_URL || "https://api.slippay.cc",
-  RATE_BRL_USDC: env.RATE_BRL_USDC || "",
-};
+// Documented prefixes passed through from .env to the processes.
+// Adding a new variable with one of these prefixes requires no edits here.
+const FORWARD_PREFIXES = [
+  "RELAYER_",
+  "ETHERFUSE_",
+  "FOURP_",
+  "DUNE_",
+  "ASK_",
+  "CLAUDE_",
+  "TRUSTED_",
+  "SLIPPAY_",
+  "STELLAR_",
+  "SOROBAN_",
+  "SUPABASE_",
+  "CHECKOUT_",
+  "API_KEY_",
+  "RATE_",
+  "ZOD_",
+  "MERCHANT_",
+  "LISTENER_",
+  "PORT",
+  "NODE_ENV",
+  "HOME",
+  "WEB_DIST",
+  "SHOPIFY_",
+];
 
-const listenerEnv = {
-  NODE_ENV: "production",
-  SUPABASE_URL: env.SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
-  SLIPPAY_DB_SCHEMA: env.SLIPPAY_DB_SCHEMA || "public",
-  STELLAR_NETWORK: env.STELLAR_NETWORK || "TESTNET",
-  MERCHANT_POLL_MS: env.MERCHANT_POLL_MS || "30000",
-};
+function filterEnv(sourceEnv, prefixes = FORWARD_PREFIXES) {
+  const out = {};
+  if (!sourceEnv) return out;
+  for (const [k, v] of Object.entries(sourceEnv)) {
+    if (prefixes.some((p) => k.startsWith(p) || k === p)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function buildApiEnv(sourceEnv) {
+  const filtered = filterEnv(sourceEnv);
+  return {
+    ...filtered,
+    PORT: sourceEnv.API_PORT || sourceEnv.PORT || "8080",
+    SLIPPAY_DB_SCHEMA: sourceEnv.SLIPPAY_DB_SCHEMA || "public",
+    STELLAR_NETWORK: sourceEnv.STELLAR_NETWORK || "TESTNET",
+    CHECKOUT_BASE_URL: sourceEnv.CHECKOUT_BASE_URL || "https://api.slippay.cc",
+  };
+}
+
+function buildListenerEnv(sourceEnv) {
+  const filtered = filterEnv(sourceEnv);
+  return {
+    NODE_ENV: "production",
+    ...filtered,
+    SLIPPAY_DB_SCHEMA: sourceEnv.SLIPPAY_DB_SCHEMA || "public",
+    STELLAR_NETWORK: sourceEnv.STELLAR_NETWORK || "TESTNET",
+    MERCHANT_POLL_MS: sourceEnv.MERCHANT_POLL_MS || "30000",
+  };
+}
+
+const apiEnv = buildApiEnv(env);
+const listenerEnv = buildListenerEnv(env);
 
 const PULSE_PYTHON = path.join(ROOT, "agents/pulse/.venv/bin/python");
 const PULSE_SCRIPT = path.join(ROOT, "agents/pulse/pulse.py");
@@ -91,4 +131,9 @@ module.exports = {
       time: true,
     },
   ],
+  loadEnv,
+  filterEnv,
+  buildApiEnv,
+  buildListenerEnv,
+  FORWARD_PREFIXES,
 };
