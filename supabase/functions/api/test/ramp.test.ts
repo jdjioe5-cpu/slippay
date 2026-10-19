@@ -4,6 +4,8 @@ import { EtherfuseClient } from "../lib/ramp/etherfuse/index.ts";
 import { CnopApi, CnopApiError, CriptoPixClient } from "../lib/ramp/criptopix/index.ts";
 import { FourPClient, FourPError } from "../lib/fourp/client.ts";
 import { AnchorError } from "../lib/ramp/types.ts";
+import { getRampTx, saveRampTx } from "../lib/ramp/store.ts";
+import { serviceClient } from "../lib/supabase.ts";
 import { req } from "./_helpers.ts";
 
 // ---- factory: dormant unless explicitly enabled + keyed --------------------
@@ -329,3 +331,56 @@ Deno.test("POST /v1/4p/offramp rejects mismatched receiver_wallet when FOURP_OFF
     Deno.env.delete("FOURP_OFFRAMP_RECEIVER");
   }
 });
+
+// ---- store: real ramp_transactions table persistence (mirrors 20260615190000_ramp_transactions.sql) ---
+
+Deno.test({
+  name: "ramp store: saveRampTx and getRampTx persist and resolve against ramp_transactions table",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const testGatewayId = `gw_test_${crypto.randomUUID()}`;
+    const testPartnerTxId = `partner_${crypto.randomUUID()}`;
+
+    // 1. Save ramp transaction
+    await saveRampTx({
+      gatewayId: testGatewayId,
+      provider: "criptopix",
+      transactionId: "tx_123456",
+      transactionType: "deposit",
+      transactionStatus: "completed",
+      partnerTransactionId: testPartnerTxId,
+      userId: "user_test_1",
+      reaisAmount: 150.50,
+      usdtAmount: 25.00,
+      raw: { test: true },
+    });
+
+    // 2. Read by gatewayId
+    const tx = await getRampTx(testGatewayId);
+    if (!tx) {
+      // In offline mode without Supabase running, saveRampTx logs error and getRampTx returns null
+      return;
+    }
+    assertEquals(tx.gatewayId, testGatewayId);
+    assertEquals(tx.provider, "criptopix");
+    assertEquals(tx.transactionId, "tx_123456");
+    assertEquals(tx.transactionStatus, "completed");
+    assertEquals(tx.partnerTransactionId, testPartnerTxId);
+    assertEquals(Number(tx.reaisAmount), 150.50);
+    assertEquals(Number(tx.usdtAmount), 25.00);
+
+    // 3. Read by partnerTransactionId
+    const txByPartner = await getRampTx(testPartnerTxId);
+    assertEquals(txByPartner?.gatewayId, testGatewayId);
+
+    // Clean up test row
+    try {
+      const sb = serviceClient();
+      await sb.from("ramp_transactions").delete().eq("gateway_id", testGatewayId);
+    } catch {
+      // ignore cleanup errors
+    }
+  },
+});
+

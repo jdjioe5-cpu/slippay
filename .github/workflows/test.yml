@@ -25,6 +25,8 @@ jobs:
         version: latest
     - name: Install
       run: pnpm install --frozen-lockfile
+    - name: Check SQL migration placement
+      run: node scripts/check-migration-paths.cjs
     - name: Build shared (consumed by web + listener)
       run: pnpm --filter @slippay/shared build
     - name: Lint
