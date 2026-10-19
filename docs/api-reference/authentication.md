@@ -42,6 +42,9 @@ Routes that require an API key:
 | `/api/v1/subscriptions/:id` | GET, PATCH |
 | `/api/v1/subscriptions/:id/charge` | POST |
 | `/api/v1/subscriptions/:id/cancel` | POST |
+| `/api/v1/billing/fees` | GET (API key or JWT) |
+| `/api/v1/x402-resources` | POST, GET |
+| `/api/v1/offramp/*` | POST, GET (API key or JWT) |
 
 > **Security**: never expose the API key in client-side JavaScript. Treat it
 > like a password. If leaked, rotate immediately from the dashboard.

@@ -34,11 +34,19 @@
 
 ## API reference
 
+* [Overview & Route Table](api-reference/README.md)
 * [Authentication](api-reference/authentication.md)
 * [Merchants](api-reference/merchants.md)
 * [Orders](api-reference/orders.md)
 * [Subscriptions](api-reference/subscriptions.md)
 * [Webhooks](api-reference/webhooks.md)
+* [Ramps & Off-ramp](api-reference/ramps.md)
+* [4P Finance Ramp](api-reference/fourp.md)
+* [Gas Relayer](api-reference/relayer.md)
+* [x402 Protocol](api-reference/x402.md)
+* [Billing](api-reference/billing.md)
+* [Metrics](api-reference/metrics.md)
+* [Ask AI Assistant](api-reference/ask.md)
 * [Errors](api-reference/errors.md)
 
 ## Guides
