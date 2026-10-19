@@ -12,11 +12,32 @@ import '../../features/subscription/presentation/subscription_screen.dart';
 import '../../features/charge/presentation/charge_screen.dart';
 import '../../features/wallet/presentation/account_screen.dart';
 
+/// Listenable that notifies GoRouter when wallet connection state changes.
+class RouterRefreshNotifier extends ChangeNotifier {
+  RouterRefreshNotifier(Ref ref) {
+    ref.listen<bool>(isConnectedProvider, (previous, next) {
+      if (previous != next) {
+        notifyListeners();
+      }
+    });
+  }
+}
+
+final routerRefreshNotifierProvider = Provider<RouterRefreshNotifier>((ref) {
+  final notifier = RouterRefreshNotifier(ref);
+  ref.onDispose(notifier.dispose);
+  return notifier;
+});
+
 /// Routes guarded by wallet-connected state. Onboarding when no wallet; the home
 /// (balance) once connected. Deep links (Pix QR / payment request) land here too.
 final routerProvider = Provider<GoRouter>((ref) {
-  return GoRouter(
-    initialLocation: '/onboarding',
+  final refreshListenable = ref.watch(routerRefreshNotifierProvider);
+  final isConnected = ref.watch(isConnectedProvider);
+
+  final router = GoRouter(
+    initialLocation: isConnected ? '/balance' : '/onboarding',
+    refreshListenable: refreshListenable,
     redirect: (context, state) {
       final connected = ref.read(isConnectedProvider);
       final atOnboarding = state.matchedLocation == '/onboarding';
@@ -59,4 +80,6 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
     ],
   );
+  ref.onDispose(router.dispose);
+  return router;
 });
