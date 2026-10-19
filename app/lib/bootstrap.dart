@@ -10,6 +10,9 @@ import 'core/config/app_config.dart';
 Future<void> bootstrap(Widget Function() builder) async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Validate environment configuration consistency at startup.
+  AppConfig.validate();
+
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     if (kReleaseMode) {

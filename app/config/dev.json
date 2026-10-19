@@ -5,8 +5,8 @@
   "SOROBAN_RPC": "https://soroban-testnet.stellar.org",
   "HORIZON_URL": "https://horizon-testnet.stellar.org",
   "NETWORK_PASSPHRASE": "Test SDF Network ; September 2015",
-  "RP_ID": "app.slippay.cc",
-  "API_BASE": "https://api.slippay.cc/api",
+  "RP_ID": "localhost",
+  "API_BASE": "http://localhost:54321/functions/v1/api",
   "RELAYER_URL": "",
   "SENTRY_DSN": ""
 }
