@@ -47,6 +47,16 @@ jobs:
       run: pnpm --filter @slippay/web build
     - name: Build listener
       run: pnpm --filter @slippay/listener build
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        channel: 'stable'
+        cache: true
+    - name: App tests (flutter test)
+      run: |
+        cd app
+        flutter test
     - name: Stop Supabase
       if: always()
       run: supabase stop || true
+
