@@ -14,6 +14,7 @@ import ramp from "./routes/ramp.ts";
 import offramp from "./routes/offramp.ts";
 import { ALLOWED_ORIGINS_SET } from "@slippay/shared";
 import fourp from "./routes/fourp.ts";
+import { verifyDatabaseSchema } from "./lib/supabase.ts";
 
 const api = new Hono().basePath("/api");
 api.use("*", errorMiddleware);
@@ -155,6 +156,13 @@ app.get("*", async (c) => {
 
 if (import.meta.main) {
   const port = Number(Deno.env.get("PORT") ?? 8000);
+  const skipCheck = Deno.env.get("SKIP_SCHEMA_CHECK") === "1";
+  if (!skipCheck && Deno.env.get("SUPABASE_URL") && Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
+    const res = await verifyDatabaseSchema();
+    if (!res.ok) {
+      console.error(`[FATAL] Startup database schema verification failed: ${res.error}`);
+    }
+  }
   Deno.serve({ port }, app.fetch);
 }
 

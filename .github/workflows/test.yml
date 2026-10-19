@@ -31,6 +31,10 @@ jobs:
       run: pnpm -r lint
     - name: Workspace tests (shared, web, listener)
       run: pnpm -r test
+    - name: Check schema configuration alignment
+      run: |
+        cd supabase/functions/api
+        deno test --allow-all test/schema_config.test.ts
     - name: Start local Supabase stack
       run: supabase start
     - name: API edge function tests (deno)
