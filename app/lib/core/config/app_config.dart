@@ -27,8 +27,19 @@ class AppConfig {
 
   static const String apiBase =
       String.fromEnvironment('API_BASE', defaultValue: 'https://api.slippay.cc/api');
-  static const String relayerUrl = String.fromEnvironment('RELAYER_URL', defaultValue: '');
   static const String sentryDsn = String.fromEnvironment('SENTRY_DSN', defaultValue: '');
 
   static bool get isProd => flavor == 'prod';
+
+  /// Validates configuration invariants at app initialization.
+  /// A production build cannot ship without crash reporting wired.
+  static void validate({String? flavor, String? sentryDsn}) {
+    final activeFlavor = flavor ?? AppConfig.flavor;
+    final activeDsn = sentryDsn ?? AppConfig.sentryDsn;
+    if (activeFlavor == 'prod' && activeDsn.trim().isEmpty) {
+      throw StateError(
+        'Production build cannot ship without SENTRY_DSN configured for crash reporting.',
+      );
+    }
+  }
 }

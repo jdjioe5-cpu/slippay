@@ -7,6 +7,5 @@
   "NETWORK_PASSPHRASE": "Public Global Stellar Network ; September 2015",
   "RP_ID": "app.slippay.cc",
   "API_BASE": "https://api.slippay.cc/api",
-  "RELAYER_URL": "",
   "SENTRY_DSN": ""
 }
