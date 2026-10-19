@@ -46,14 +46,14 @@ Then activate from WordPress admin.
    | API base URL     | `https://api.slippay.cc` (don't change unless self-host) |
    | API key          | `sk_live_…` from your dashboard                       |
    | Default asset    | USDC or PYUSD                                          |
-   | Webhook secret   | match what you configured on the SlipPay merchant side |
+   | Webhook secret   | mandatory string (>= 32 chars); must match what you configured on the SlipPay merchant side |
 
 3. **Configure the webhook URL on SlipPay**
    In your SlipPay merchant dashboard, set webhook URL to:
    ```
    https://your-store.com/wc-api/wc_slippay
    ```
-   Plugin verifies HMAC-SHA256 of the request body against your shared secret.
+   Plugin verifies HMAC-SHA256 (`t=<unix>,v1=<hex>`) of the request body against your shared secret.
 
 ---
 
@@ -87,13 +87,11 @@ Then activate from WordPress admin.
 
 ---
 
-## Supported and tested
+## Compatibility & Verification
 
-- WordPress 6.0+
-- WooCommerce 7.0+ through 9.x
-- PHP 7.4+
-- HPOS (High-Performance Order Storage) compatible: declared via
-  `FeaturesUtil::declare_compatibility('custom_order_tables')`
+- **PHP**: PHP 7.4+
+- **HPOS**: High-Performance Order Storage compatibility declared via `FeaturesUtil::declare_compatibility('custom_order_tables')` in `woocommerce-slippay.php`
+- **WordPress & WooCommerce Target**: WordPress 6.0+ and WooCommerce 7.0+ through 9.x (runtime integration harness tracked in issue #164)
 
 ---
 
@@ -104,8 +102,18 @@ Then activate from WordPress admin.
 - API key is stored encrypted at rest by WordPress (in `wp_options` per WC
   convention). For extra safety, rotate the key from your SlipPay dashboard
   if you suspect compromise; old key invalidates immediately.
-- Webhook handler rejects requests with missing or mismatched HMAC when a
-  secret is configured. Use this in production.
+- **Mandatory Webhook Secret**: Webhook verification is required and unconditional.
+  A webhook secret of at least 32 characters (`strlen($secret) >= 32`) must be configured
+  in WooCommerce settings. If empty or shorter than 32 characters, the handler rejects
+  all requests with HTTP `503 webhook_not_configured` and refuses to mark orders as paid
+  (closing the auth-bypass vector from audit-001).
+- **HMAC Signature & Timing Drift**: Webhook requests must provide a valid signature
+  header (`t=<unix>,v1=<hex>`). The plugin computes `hash_hmac('sha256', $t . '.' . $raw, $secret)`
+  and compares it in constant time with `hash_equals`. Requests with timestamp drift
+  exceeding 300 seconds (`abs(time() - $t) > 300`) are rejected with `401 stale signature`.
+- **Replay Protection**: The listener provides a unique delivery ID in the `X-SlipPay-Delivery-Id`
+  header. The plugin records this delivery ID in a 24-hour WordPress transient cache
+  (`DAY_IN_SECONDS`) and rejects replayed deliveries with HTTP `409 duplicate delivery`.
 - `wc_get_orders` lookup by `_slippay_order_id` is exact-match; no fuzzy
   resolution that could let a malicious payload mark the wrong order paid.
 
