@@ -131,8 +131,14 @@ class WC_Slippay_Gateway extends WC_Payment_Gateway {
             return [ 'result' => 'fail' ];
         }
 
-        // BRL amount with two decimals (SlipPay schema validates ^\d{1,9}\.\d{2}$).
-        $brl = number_format( (float) $order->get_total(), 2, '.', '' );
+        // Format and validate BRL amount without float casting (SlipPay schema validates ^\d{1,9}\.\d{2}$).
+        $formatted_result = $this->format_and_validate_total( $order->get_total() );
+        if ( ! $formatted_result['ok'] ) {
+            $order->add_order_note( esc_html( $formatted_result['error'] ) );
+            wc_add_notice( $formatted_result['error'], 'error' );
+            return [ 'result' => 'fail' ];
+        }
+        $brl = $formatted_result['amount'];
 
         $body = wp_json_encode( [
             'brl_amount'         => $brl,
@@ -252,5 +258,79 @@ class WC_Slippay_Gateway extends WC_Payment_Gateway {
         }
         if ( WC()->cart && WC()->cart->total <= 0 ) return false;
         return parent::is_available();
+    }
+
+    /**
+     * Format and validate order total without casting to float.
+     *
+     * Rounding Direction & Schema Contract:
+     * - Operates on WC's decimal-safe string representation without intermediate float cast.
+     * - Rounding direction: for fractional amounts exceeding 2 decimal places (such as per-line
+     *   tax calculations, e.g. 1234.565), amounts are rounded to the nearest cent using
+     *   PHP_ROUND_HALF_UP (0.005 rounds to 0.01), mirroring WooCommerce standard tax rounding
+     *   and commercial invoice conventions.
+     * - Schema requirement: matches ^\d{1,9}\.\d{2}$ (maximum 9 integer digits, exactly 2 fraction digits,
+     *   upper limit 999,999,999.99 BRL).
+     *
+     * @param string|int|float $raw_total Stored order total.
+     * @return array [ 'ok' => bool, 'amount' => string|null, 'error' => string|null ]
+     */
+    public function format_and_validate_total( $raw_total ) {
+        $total_str = trim( (string) $raw_total );
+        if ( '' === $total_str || ! is_numeric( $total_str ) ) {
+            return [
+                'ok'     => false,
+                'amount' => null,
+                'error'  => __( 'SlipPay error: Invalid order total.', 'woocommerce-slippay' ),
+            ];
+        }
+
+        // Decimal-safe formatting to 2 decimal places using WC helper when available
+        if ( function_exists( 'wc_format_decimal' ) ) {
+            $formatted = wc_format_decimal( $total_str, 2, false );
+        } else {
+            // Standalone fallback: format without float cast; round with PHP_ROUND_HALF_UP when fractional digits > 2
+            $parts     = explode( '.', $total_str );
+            $int_part  = $parts[0];
+            $frac_part = isset( $parts[1] ) ? $parts[1] : '';
+            if ( strlen( $frac_part ) > 2 ) {
+                $rounded   = round( (string) $total_str, 2, PHP_ROUND_HALF_UP );
+                $formatted = sprintf( '%.2f', $rounded );
+            } else {
+                $formatted = sprintf( '%s.%s', $int_part, str_pad( $frac_part, 2, '0' ) );
+            }
+        }
+
+        // Schema validation: ^\d{1,9}\.\d{2}$
+        if ( ! preg_match( '/^\d{1,9}\.\d{2}$/', $formatted ) ) {
+            // Check specific failure cause for actionable reporting
+            $parts = explode( '.', $formatted );
+            if ( isset( $parts[0] ) && strlen( $parts[0] ) > 9 ) {
+                return [
+                    'ok'     => false,
+                    'amount' => null,
+                    'error'  => __( 'SlipPay error: Order total exceeds the maximum supported limit of 999,999,999.99 BRL (maximum 9 integer digits).', 'woocommerce-slippay' ),
+                ];
+            }
+            return [
+                'ok'     => false,
+                'amount' => null,
+                'error'  => __( 'SlipPay error: Order total does not match required currency format (^\d{1,9}\.\d{2}$).', 'woocommerce-slippay' ),
+            ];
+        }
+
+        if ( '0.00' === $formatted ) {
+            return [
+                'ok'     => false,
+                'amount' => null,
+                'error'  => __( 'SlipPay error: Order total must be greater than zero.', 'woocommerce-slippay' ),
+            ];
+        }
+
+        return [
+            'ok'     => true,
+            'amount' => $formatted,
+            'error'  => null,
+        ];
     }
 }
