@@ -178,11 +178,15 @@ r.post("/deploy", async (c) => {
   return c.json({ wallet_id: walletId, funded: FUND_AMOUNT });
 });
 
-interface Verdict { ok: boolean; reason?: string }
+export interface Verdict { ok: boolean; reason?: string }
+
+export function getWasmHashHex(): string {
+  return (Deno.env.get("RELAYER_WASM_HASH") ?? WASM_HASH_HEX).toLowerCase();
+}
 
 // THE trust boundary: decide whether a tx is a legitimate slippay op the
 // sponsor will pay gas for. Fail-closed on anything unexpected.
-function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
+export function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
   let tx: ReturnType<typeof TransactionBuilder.fromXDR>;
   try {
     tx = TransactionBuilder.fromXDR(txXdr, PASSPHRASE);
@@ -213,7 +217,8 @@ function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
         return { ok: false, reason: "deploy_not_wasm" };
       }
       const wasmHash = hex(new Uint8Array(exec.wasmHash()));
-      if (!WASM_HASH_HEX || wasmHash !== WASM_HASH_HEX) {
+      const expectedWasm = getWasmHashHex();
+      if (!expectedWasm || wasmHash !== expectedWasm) {
         return { ok: false, reason: "wrong_wasm_hash" };
       }
       return { ok: true };
@@ -298,4 +303,5 @@ r.post("/submit", async (c) => {
   return c.json({ hash });
 });
 
+export { AMOUNT_CAP, FEE_CAP, WASM_HASH_HEX, PASSPHRASE };
 export default r;
