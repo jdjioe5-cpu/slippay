@@ -12,14 +12,14 @@
 // and submits. If this endpoint is abused, the worst case is wasted gas, not
 // stolen funds — bounded by: (1) it ONLY signs txs whose source is the sponsor,
 // (2) ONLY a single op that is either a slippay-wasm contract deploy OR a
-// `transfer` FROM a contract address on the native SAC with amount <= cap, and
+// `transfer` FROM a contract address on an allowed SAC (native or USDC) with amount <= cap, and
 // (3) tx fee <= cap. Plus rate limiting.
 //
 // The browser builds the (unsigned) tx with the sponsor as source + the passkey
 // auth entry attached, then POSTs the XDR here; we validate, sign, submit.
 
 import { Hono } from "hono";
-import { hexToBuf } from "@slippay/shared";
+import { hexToBuf, NETWORK } from "@slippay/shared";
 import { rateLimit } from "../middleware/rate_limit.ts";
 import {
   Address, Asset, BASE_FEE, Keypair, Networks, Operation,
@@ -178,21 +178,66 @@ r.post("/deploy", async (c) => {
   return c.json({ wallet_id: walletId, funded: FUND_AMOUNT });
 });
 
-interface Verdict { ok: boolean; reason?: string }
+export interface Verdict { ok: boolean; reason?: string }
+
+export interface ValidateSponsorableOptions {
+  allowedContracts?: Set<string>;
+  amountCap?: bigint;
+  feeCap?: bigint;
+  networkPassphrase?: string;
+}
+
+/**
+ * Returns the set of contract addresses authorized for sponsored transfers.
+ * Closed set: native SAC for the network + USDC SAC (+ optional env extras).
+ */
+export function getAllowedTransferContracts(networkPassphrase?: string): Set<string> {
+  const net = (Deno.env.get("RELAYER_NETWORK") ?? Deno.env.get("STELLAR_NETWORK") ?? "testnet").toLowerCase();
+  const isMainnet = networkPassphrase
+    ? networkPassphrase === Networks.PUBLIC
+    : (net === "mainnet" || net === "public");
+  const passphrase = networkPassphrase ?? (isMainnet ? Networks.PUBLIC : Networks.TESTNET);
+  const nativeSac = Asset.native().contractId(passphrase);
+  const usdcIssuer = Deno.env.get("RELAYER_USDC_ISSUER")
+    ?? Deno.env.get("STELLAR_USDC_ISSUER_OVERRIDE")
+    ?? (isMainnet ? NETWORK.mainnet.usdc_issuer : NETWORK.testnet.usdc_issuer);
+  const allowed = new Set<string>([nativeSac]);
+  if (usdcIssuer) {
+    try {
+      const usdcSac = new Asset("USDC", usdcIssuer).contractId(passphrase);
+      allowed.add(usdcSac);
+    } catch {
+      // ignore invalid issuer override
+    }
+  }
+  const extra = Deno.env.get("RELAYER_ALLOWED_CONTRACTS");
+  if (extra) {
+    for (const c of extra.split(",").map((s) => s.trim()).filter(Boolean)) {
+      allowed.add(c);
+    }
+  }
+  return allowed;
+}
 
 // THE trust boundary: decide whether a tx is a legitimate slippay op the
 // sponsor will pay gas for. Fail-closed on anything unexpected.
-function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
+export function validateSponsorable(
+  txXdr: string,
+  sponsorPubkey: string,
+  options?: ValidateSponsorableOptions,
+): Verdict {
+  const passphrase = options?.networkPassphrase ?? PASSPHRASE;
   let tx: ReturnType<typeof TransactionBuilder.fromXDR>;
   try {
-    tx = TransactionBuilder.fromXDR(txXdr, PASSPHRASE);
+    tx = TransactionBuilder.fromXDR(txXdr, passphrase);
   } catch (e) {
     return { ok: false, reason: `bad_xdr: ${String((e as Error).message ?? e)}` };
   }
   // FeeBump not accepted — we want the plain tx whose source we control.
   if ("innerTransaction" in tx) return { ok: false, reason: "fee_bump_not_accepted" };
   if (tx.source !== sponsorPubkey) return { ok: false, reason: "source_not_sponsor" };
-  if (BigInt(tx.fee) > FEE_CAP) return { ok: false, reason: "fee_over_cap" };
+  const feeCap = options?.feeCap ?? BigInt(Deno.env.get("RELAYER_FEE_CAP") ?? FEE_CAP);
+  if (BigInt(tx.fee) > feeCap) return { ok: false, reason: "fee_over_cap" };
   if (tx.operations.length !== 1) return { ok: false, reason: "must_be_single_op" };
 
   const op = tx.operations[0] as { type: string; func?: xdr.HostFunction };
@@ -213,7 +258,8 @@ function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
         return { ok: false, reason: "deploy_not_wasm" };
       }
       const wasmHash = hex(new Uint8Array(exec.wasmHash()));
-      if (!WASM_HASH_HEX || wasmHash !== WASM_HASH_HEX) {
+      const expectedWasm = (Deno.env.get("RELAYER_WASM_HASH") ?? WASM_HASH_HEX).toLowerCase();
+      if (!expectedWasm || wasmHash !== expectedWasm) {
         return { ok: false, reason: "wrong_wasm_hash" };
       }
       return { ok: true };
@@ -222,23 +268,50 @@ function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
     }
   }
 
-  // (b) A `transfer` FROM a contract (a passkey wallet) on a SAC, amount <= cap.
+  // (b) A `transfer` FROM a contract (a passkey wallet) on an allowlisted SAC, amount <= cap.
   if (kind === "hostFunctionTypeInvokeContract") {
     try {
       const ic = hf.invokeContract();
       if (ic.functionName().toString() !== "transfer") {
         return { ok: false, reason: "not_transfer" };
       }
+
+      // 1. Verify target contract is in allowlist (native SAC or USDC SAC).
+      let targetContract: string;
+      try {
+        targetContract = Address.fromScAddress(ic.contractAddress()).toString();
+      } catch (e) {
+        return { ok: false, reason: `bad_contract_address: ${String((e as Error).message ?? e)}` };
+      }
+
+      const allowedContracts = options?.allowedContracts ?? getAllowedTransferContracts(passphrase);
+      if (!allowedContracts.has(targetContract)) {
+        return { ok: false, reason: `disallowed_contract: ${targetContract}` };
+      }
+
       const args = ic.args();
       if (args.length !== 3) return { ok: false, reason: "bad_transfer_args" };
-      // from (args[0]) must be a CONTRACT address — i.e. a passkey wallet,
+
+      // 2. from (args[0]) must be a CONTRACT address — i.e. a passkey wallet,
       // never a classic account the relayer could be tricked into draining.
       const from = args[0];
       if (from.switch().name !== "scvAddress"
         || from.address().switch().name !== "scAddressTypeContract") {
         return { ok: false, reason: "from_not_contract" };
       }
-      // amount (args[2]) i128 <= cap.
+
+      // 3. to (args[1]) must be a valid address (account or contract).
+      const to = args[1];
+      if (to.switch().name !== "scvAddress") {
+        return { ok: false, reason: "to_not_address" };
+      }
+      try {
+        Address.fromScVal(to).toString();
+      } catch {
+        return { ok: false, reason: "to_not_address" };
+      }
+
+      // 4. amount (args[2]) i128 <= cap.
       const amt = args[2];
       if (amt.switch().name !== "scvI128") return { ok: false, reason: "amount_not_i128" };
       const parts = amt.i128();
@@ -246,7 +319,8 @@ function validateSponsorable(txXdr: string, sponsorPubkey: string): Verdict {
       const lo = BigInt(parts.lo().toString());
       const amount = (hi << 64n) + lo;
       if (amount <= 0n) return { ok: false, reason: "amount_not_positive" };
-      if (amount > AMOUNT_CAP) return { ok: false, reason: "amount_over_cap" };
+      const amountCap = options?.amountCap ?? BigInt(Deno.env.get("RELAYER_AMOUNT_CAP") ?? AMOUNT_CAP);
+      if (amount > amountCap) return { ok: false, reason: "amount_over_cap" };
       return { ok: true };
     } catch (e) {
       return { ok: false, reason: `transfer_parse: ${String((e as Error).message ?? e)}` };
