@@ -27,6 +27,8 @@ jobs:
       run: pnpm install --frozen-lockfile
     - name: Build shared (consumed by web + listener)
       run: pnpm --filter @slippay/shared build
+    - name: Check repository root hygiene
+      run: node scripts/check-root-hygiene.mjs
     - name: Lint
       run: pnpm -r lint
     - name: Workspace tests (shared, web, listener)

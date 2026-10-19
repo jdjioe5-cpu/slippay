@@ -10,6 +10,8 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
+    "check:root-hygiene": "node scripts/check-root-hygiene.mjs",
+    "demo:record": "node scripts/demo-runner.mjs",
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
     "supabase:reset": "supabase db reset",
