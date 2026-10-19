@@ -486,9 +486,23 @@ cd apps/web && pnpm dev                                               # web → 
 Tests:
 
 ```sh
+# Workspace (shared, web, listener) & Deno API
 pnpm -r test                                  # listener + packages + web unit tests
-pnpm api:test                                 # deno API tests
-cd contracts/subscription && cargo test --release
+pnpm api:test                                 # deno API tests (requires local supabase)
+
+# Smart contracts (Soroban release tests)
+for c in checkout receipt smart-wallet subscription; do (cd contracts/$c && cargo test --release); done
+
+# Agent suites & benchmark
+node --test "agents/**/*.test.mjs"            # JS suites (antiabuse, authority, axl, billing, settle)
+pytest agents                                 # Python suites (grammar, ifc, tee)
+node eval/prove_vs_judge_benchmark.mjs        # decidable money predicate benchmark
+
+# Flutter mobile app & WooCommerce WordPress plugin
+cd app && flutter test                        # mobile app unit & widget tests
+find plugins/woocommerce-slippay -name "*.php" -exec php -l {} \;  # PHP syntax lint
+
+# AXL formal verification compiler (SMT/z3)
 cd axl-compiler && cargo test
 ```
 

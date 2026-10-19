@@ -1,11 +1,25 @@
 name: test
+
 on:
   pull_request: null
   push:
     branches:
     - main
+
+# CI Surface Matrix:
+# Every surface with tests is gated on PR and push to main so signals are complete.
+# 1. test (workspace): TS packages (@slippay/shared), apps (@slippay/web, @slippay/listener),
+#    and Supabase Deno edge function tests against local stack.
+# 2. contracts: Soroban smart contracts (checkout, receipt, smart-wallet, subscription).
+#    Previously only tested in post-merge release pipelines; now gated directly on PRs.
+# 3. agents: Multi-agent security suites (antiabuse, authority, axl, billing, settlement
+#    via Node test runner; grammar, ifc, tee via pytest; prove-vs-judge benchmark in eval).
+# 4. app: Flutter mobile client tests (money representations, state machines, etc.).
+# 5. plugin: WooCommerce payment gateway WordPress plugin syntax lint (php -l).
+
 jobs:
   test:
+    name: Workspace & Edge tests (shared, web, listener, supabase)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -41,8 +55,10 @@ jobs:
         RATE_BRL_USDC: '5.80'
         API_KEY_PEPPER: 'ci-test-api-key-pepper-at-least-32-characters-long'
         CHECKOUT_TOKEN_SECRET: 'ci-test-checkout-token-secret-at-least-32-chars'
-      run: "cd supabase/functions/api\ndeno test --allow-all --no-check --env-file=../../../.env.local.ci\
-        \ test/ || \\\n  deno test --allow-all --no-check test/\n"
+      run: |
+        cd supabase/functions/api
+        deno test --allow-all --no-check --env-file=../../../.env.local.ci test/ || \
+          deno test --allow-all --no-check test/
     - name: Build web
       run: pnpm --filter @slippay/web build
     - name: Build listener
@@ -50,3 +66,72 @@ jobs:
     - name: Stop Supabase
       if: always()
       run: supabase stop || true
+
+  contracts:
+    name: Contracts tests (checkout, receipt, smart-wallet, subscription)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+    - name: Test checkout contract
+      run: cd contracts/checkout && cargo test --release
+    - name: Test receipt contract
+      run: cd contracts/receipt && cargo test --release
+    - name: Test smart-wallet contract
+      run: cd contracts/smart-wallet && cargo test --release
+    - name: Test subscription contract
+      run: cd contracts/subscription && cargo test --release
+
+  agents:
+    name: Agent suites (node --test, pytest, benchmark)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+      with:
+        node-version: 22
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install Python test dependencies
+      run: pip install pytest pytest-asyncio
+    - name: Node agent tests (antiabuse, authority, axl, billing, settlement)
+      run: node --test "agents/**/*.test.mjs"
+    - name: Python agent tests (grammar, ifc, tee)
+      run: python -m pytest agents
+    - name: Prove-vs-judge benchmark (eval)
+      run: node eval/prove_vs_judge_benchmark.mjs
+
+  app:
+    name: Flutter app tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+        cache: true
+    - name: Install app dependencies
+      run: cd app && flutter pub get
+    - name: Run Flutter tests
+      run: cd app && flutter test
+
+  plugin:
+    name: WordPress plugin (PHP lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+    - name: Lint PHP files in woocommerce-slippay
+      run: |
+        for f in $(find plugins/woocommerce-slippay -name "*.php"); do
+          php -l "$f" || exit 1
+        done
